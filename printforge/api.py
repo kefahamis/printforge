@@ -1,7 +1,4 @@
-import base64
-import hashlib
 import json
-import re
 from urllib.parse import quote
 
 import frappe
@@ -9,11 +6,15 @@ from frappe import _
 from frappe.utils import cint, flt
 
 from printforge.install import DESIGN_FIELD
+from printforge.utils import (
+	FILE_PREFIX,
+	fields_from_meta,
+	fields_from_report_columns,
+	replace_data_images,
+	stored_file_names,
+)
 
-LAYOUT_FIELDTYPES = {"Section Break", "Column Break", "Tab Break", "HTML", "Button", "Fold", "Heading"}
 MARGIN_FIELDS = ("margin_top", "margin_bottom", "margin_left", "margin_right")
-DATA_IMAGE = re.compile(r"data:image/(png|jpe?g|gif|webp|svg\+xml);base64,([A-Za-z0-9+/=]+)")
-IMAGE_EXT = {"jpeg": "jpg", "svg+xml": "svg"}
 
 
 def _check_permission():
@@ -23,6 +24,10 @@ def _check_permission():
 def _check_doctype(doctype):
 	if not doctype or not frappe.db.exists("DocType", doctype):
 		frappe.throw(_("DocType {0} does not exist on this site.").format(doctype or ""), frappe.DoesNotExistError)
+
+
+def _docfields(doctype):
+	return [df.as_dict() for df in frappe.get_meta(doctype).fields]
 
 
 @frappe.whitelist()
@@ -36,22 +41,12 @@ def list_doctypes():
 
 @frappe.whitelist()
 def get_doctype_fields(doctype):
-	"""Fields of a doctype in the shape the builder's field list uses."""
+	"""Fields of a doctype in the shape the builder's field list uses, with the columns of its child tables."""
 	_check_permission()
 	_check_doctype(doctype)
-	fields = [{"name": "name", "label": "ID", "isChild": False, "fieldtype": "Data"}]
-	for df in frappe.get_meta(doctype).fields:
-		if df.fieldtype in LAYOUT_FIELDTYPES:
-			continue
-		fields.append(
-			{
-				"name": df.fieldname,
-				"label": df.label or df.fieldname,
-				"isChild": df.fieldtype == "Table",
-				"fieldtype": df.fieldtype,
-			}
-		)
-	return fields
+	return [{"name": "name", "label": "ID", "isChild": False, "fieldtype": "Data"}] + fields_from_meta(
+		_docfields(doctype), child_fields=_docfields
+	)
 
 
 @frappe.whitelist()
@@ -80,22 +75,7 @@ def get_report_columns(report):
 	except Exception:
 		frappe.clear_messages()
 		columns = []
-
-	fields = []
-	for col in columns:
-		if isinstance(col, str):
-			label = col.split(":")[0]
-			col = {"label": label, "fieldname": frappe.scrub(label), "fieldtype": (col.split(":") + ["Data"])[1].split("/")[0]}
-		if col.get("fieldname"):
-			fields.append(
-				{
-					"name": col.get("fieldname"),
-					"label": col.get("label") or col.get("fieldname"),
-					"isChild": False,
-					"fieldtype": col.get("fieldtype") or "Data",
-				}
-			)
-	return fields
+	return fields_from_report_columns(columns, frappe.scrub)
 
 
 @frappe.whitelist()
@@ -106,9 +86,7 @@ def recent_docs(doctype):
 	return frappe.get_list(doctype, pluck="name", order_by="modified desc", limit_page_length=20)
 
 
-@frappe.whitelist(methods=["POST"])
-def preview(doctype, docname, html):
-	"""Render unsaved builder output for a real document through Frappe's own print pipeline."""
+def _render_preview(doctype, docname, html):
 	from frappe.utils.jinja_globals import bundled_asset
 	from frappe.www.printview import get_print_style, get_rendered_template, set_link_titles
 
@@ -141,6 +119,30 @@ def preview(doctype, docname, html):
 	}
 
 
+@frappe.whitelist(methods=["POST"])
+def preview(doctype, docname, html):
+	"""Render unsaved builder output for a real document through Frappe's own print pipeline."""
+	return _render_preview(doctype, docname, html)
+
+
+@frappe.whitelist(methods=["POST"])
+def preview_pdf(doctype, docname, html):
+	"""The same preview as a PDF, built the way the print view's "Get PDF" builds it."""
+	from frappe.utils.pdf import get_pdf
+
+	parts = _render_preview(doctype, docname, html)
+	page = (
+		'<!DOCTYPE html><html><head><meta charset="utf-8">'
+		f'<link rel="stylesheet" href="{parts["css_url"]}">'
+		f"<style>{parts['style']}</style></head><body>"
+		f'<div class="print-format-gutter"><div class="print-format">{parts["html"]}</div></div>'
+		"</body></html>"
+	)
+	frappe.local.response.filename = f"{docname}.pdf"
+	frappe.local.response.filecontent = get_pdf(page)
+	frappe.local.response.type = "pdf"
+
+
 @frappe.whitelist()
 def list_designs():
 	"""Print Formats that were published from the builder."""
@@ -163,43 +165,69 @@ def get_design(print_format):
 	design = doc.get(DESIGN_FIELD)
 	if not design:
 		frappe.throw(_("{0} was not made with PrintForge, so there is no design to open.").format(print_format))
-	return {"name": doc.name, "doc_type": doc.doc_type, "design": design}
+	return {"name": doc.name, "doc_type": doc.doc_type, "design": design, "modified": str(doc.modified)}
 
 
-def _store_embedded_images(*texts):
-	"""Move base64 images into the site's public files and point the texts at their URLs.
+def _save_image(print_format):
+	"""Store one image as a public file attached to the Print Format, reusing an existing copy."""
 
-	Embedded images would otherwise be stored twice (in the HTML and in the design) and
-	re-sent on every print. Returns the rewritten texts and whether anything changed.
-	"""
-	urls = {}
+	def save(file_name, content):
+		existing = frappe.db.get_value(
+			"File",
+			{"file_name": file_name, "attached_to_doctype": "Print Format", "attached_to_name": print_format},
+			"file_url",
+		)
+		if existing:
+			return existing
+		file_doc = frappe.get_doc(
+			{
+				"doctype": "File",
+				"file_name": file_name,
+				"content": content,
+				"is_private": 0,
+				"attached_to_doctype": "Print Format",
+				"attached_to_name": print_format,
+			}
+		)
+		file_doc.insert(ignore_permissions=True)
+		return file_doc.file_url
 
-	def replace(match):
-		data_url = match.group(0)
-		if data_url not in urls:
-			content = base64.b64decode(match.group(2))
-			ext = IMAGE_EXT.get(match.group(1), match.group(1))
-			file_doc = frappe.get_doc(
-				{
-					"doctype": "File",
-					"file_name": f"printforge-{hashlib.sha1(content).hexdigest()[:12]}.{ext}",
-					"content": content,
-					"is_private": 0,
-				}
-			)
-			file_doc.insert(ignore_permissions=True)
-			urls[data_url] = file_doc.file_url
-		return urls[data_url]
+	return save
 
-	return [DATA_IMAGE.sub(replace, text) for text in texts], bool(urls)
+
+def _remove_unused_images(print_format, html, design):
+	"""Delete this format's stored images that the design no longer uses."""
+	in_use = stored_file_names(html, design)
+	for file in frappe.get_all(
+		"File",
+		filters={
+			"attached_to_doctype": "Print Format",
+			"attached_to_name": print_format,
+			"file_name": ["like", FILE_PREFIX + "%"],
+		},
+		fields=["name", "file_name"],
+	):
+		if file.file_name not in in_use:
+			frappe.delete_doc("File", file.name, ignore_permissions=True)
 
 
 @frappe.whitelist(methods=["POST"])
-def publish(print_format, doctype, html, design, make_default=0, margin_mm=None, print_for="DocType"):
+def publish(
+	print_format,
+	doctype,
+	html,
+	design,
+	make_default=0,
+	margin_mm=None,
+	print_for="DocType",
+	expected_modified=None,
+	overwrite=0,
+):
 	"""Create or update a custom Print Format from a builder design.
 
 	`doctype` is the document type the format prints or, when `print_for` is "Report", the
-	name of the report.
+	name of the report. `expected_modified` is the format's timestamp when the builder last
+	read or wrote it; a different one on the site means someone else has changed it.
 	"""
 	_check_permission()
 	for_report = print_for == "Report"
@@ -235,18 +263,26 @@ def publish(print_format, doctype, html, design, make_default=0, margin_mm=None,
 			frappe.throw(
 				_("A Print Format named {0} already exists and was not made with PrintForge. Publish under a different name.").format(print_format)
 			)
+		if not cint(overwrite) and str(doc.modified) != str(expected_modified or ""):
+			frappe.throw(
+				_("{0} was last changed on the site by {1}, after this design was opened. Publishing now replaces that version.").format(
+					print_format, doc.modified_by
+				),
+				frappe.TimestampMismatchError,
+			)
 
-	(html, design), images_moved = _store_embedded_images(html, design)
+	def apply(html, design):
+		doc.update(
+			{
+				"standard": "No",
+				"custom_format": 1,
+				"disabled": 0,
+				"html": html,
+				DESIGN_FIELD: design,
+			}
+		)
 
-	doc.update(
-		{
-			"standard": "No",
-			"custom_format": 1,
-			"disabled": 0,
-			"html": html,
-			DESIGN_FIELD: design,
-		}
-	)
+	apply(html, design)
 	if for_report:
 		# Report formats are rendered in the browser by Frappe's own template engine, so
 		# the HTML is not Jinja and must not be validated as such.
@@ -267,6 +303,14 @@ def publish(print_format, doctype, html, design, make_default=0, margin_mm=None,
 	else:
 		doc.save()
 
+	# Images are attached to the format, so they need it to exist first. Embedded images
+	# would otherwise be stored twice (HTML and design) and re-sent on every print.
+	(html, design), images_moved = replace_data_images([html, design], _save_image(doc.name))
+	if images_moved:
+		apply(html, design)
+		doc.save()
+	_remove_unused_images(doc.name, html, design)
+
 	is_default = bool(cint(make_default)) and not for_report
 	if is_default:
 		from frappe.printing.doctype.print_format.print_format import make_default as set_default
@@ -277,6 +321,7 @@ def publish(print_format, doctype, html, design, make_default=0, margin_mm=None,
 		"name": doc.name,
 		"created": created,
 		"is_default": is_default,
+		"modified": str(doc.modified),
 		"route": "/app/print-format/" + quote(doc.name),
 		# Only sent back when images were moved, so the builder can switch to the file URLs
 		"design": design if images_moved else None,

@@ -1,9 +1,8 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
-import * as htmlToImage from 'html-to-image';
-import { getSettings, pageDims, getPathData, repeatRoots, toPrintFormatHtml, toStandaloneHtml } from './exporter.js';
+import { getSettings, pageDims, getPathData, repeatRoots, pageContentHeight, toPrintFormatHtml, toStandaloneHtml } from './exporter.js';
 import { snap, uid, treeUpd, treeAdd, treeRemove, migrateTree, treeMove, findParent, isDesc, cloneTree, mkT, mkPath, FACS, buildTree, buildReportTree, buildSampleInvoiceTree } from './tree.js';
 import { injectStyles } from './styles.js';
-import { FRAPPE, frappeCall } from './frappe.js';
+import { FRAPPE, frappeCall, frappePdf } from './frappe.js';
 import { SmartGuides } from './components/atoms.jsx';
 import { CNode, Ruler } from './components/Canvas.jsx';
 import { Breadcrumb, Props, LeftPanel } from './components/Panels.jsx';
@@ -12,7 +11,7 @@ import { ErrorGuardian, NewDesignModal, DesignHistoryModal, PublishModal } from 
 // ── App ───────────────────────────────────────────────────────────────────────
 function MainApp() {
   const [theme, setTheme] = useState(() => localStorage.getItem("pf_theme") || "dark");
-  useEffect(() => { localStorage.setItem("pf_theme", theme); }, [theme]);
+  useEffect(() => { try { localStorage.setItem("pf_theme", theme); } catch (e) { /* storage full: the theme just is not remembered */ } }, [theme]);
 
   // Load persistence or default
   const savedState = useMemo(() => {
@@ -63,12 +62,26 @@ function MainApp() {
   // Name of the Print Format on the site this design was published to or opened from
   const [printFormat, setPrintFormat] = useState(savedState?.printFormat || "");
   const [showPublish, setShowPublish] = useState(false);
+  // The site's timestamp for that Print Format when it was last read or written here
+  const [siteModified, setSiteModified] = useState(savedState?.siteModified || "");
+  // Identifies this design in the browser's saved list, so two designs for one doctype stay separate
+  const [designId, setDesignId] = useState(savedState?.designId || uid);
+
+  // Browser storage is small (about 5 MB) and images are large; a failed write must not take the editor down
+  const [storageFull, setStorageFull] = useState(false);
+  const store = useCallback((key, value) => {
+    try {
+      localStorage.setItem(key, JSON.stringify(value));
+      return true;
+    } catch (e) {
+      return false;
+    }
+  }, []);
 
   // Auto-Save Effect
   useEffect(() => {
-    const state = { tree, doctype, docFields, assets, printFormat };
-    localStorage.setItem("pf_current", JSON.stringify(state));
-  }, [tree, doctype, docFields, assets, printFormat]);
+    setStorageFull(!store("pf_current", { tree, doctype, docFields, assets, printFormat, siteModified, designId }));
+  }, [tree, doctype, docFields, assets, printFormat, siteModified, designId, store]);
 
   const [zoom, setZoom] = useState(0.76);
   const [showCode, setShowCode] = useState(false);
@@ -110,6 +123,7 @@ function MainApp() {
   }, [tree, showCode, preview]);
   const jinja = useMemo(() => toPrintFormatHtml(tree, { heights }), [tree, heights]);
   const isReport = getSettings(tree).printFor === "Report";
+  const contentH = pageContentHeight(tree, { heights });
   const pg = pageDims(tree);
   const settings = getSettings(tree);
   const updateSettings = (ch) => record({ ...tree, settings: { ...settings, ...ch } });
@@ -151,9 +165,9 @@ function MainApp() {
       const fileName = `${doctype.toLowerCase().replace(/\s+/g, '_')}_${Date.now()}.${format}`;
 
       if (format === 'png') {
-        dataUrl = await htmlToImage.toPng(node, options);
+        dataUrl = await (await import('html-to-image')).toPng(node, options);
       } else {
-        dataUrl = await htmlToImage.toJpeg(node, { ...options, quality: 0.95 });
+        dataUrl = await (await import('html-to-image')).toJpeg(node, { ...options, quality: 0.95 });
       }
 
       const link = document.createElement('a');
@@ -464,10 +478,12 @@ function MainApp() {
     setSel(null);
     setActivePageIdx(0);
     setPrintFormat("");
+    setSiteModified("");
+    setDesignId(uid());
     setShowNewModal(false);
   };
 
-  const publish = async (name, makeDefault) => {
+  const publish = async (name, makeDefault, overwrite = false) => {
     const pad = tree.pages[0]?.padding ?? 40;
     const res = await frappeCall("publish", {
       print_format: name,
@@ -476,9 +492,13 @@ function MainApp() {
       print_for: isReport ? "Report" : "DocType",
       design: JSON.stringify({ version: "1.1", doctype, docFields, assets, tree }),
       make_default: makeDefault ? 1 : 0,
-      margin_mm: Math.round(pad * 25.4 / 96 * 10) / 10
+      margin_mm: Math.round(pad * 25.4 / 96 * 10) / 10,
+      // Only vouch for the site's copy if it is the format this design came from
+      expected_modified: name === printFormat ? siteModified : "",
+      overwrite: overwrite ? 1 : 0
     });
     setPrintFormat(res.name);
+    setSiteModified(res.modified || "");
     if (res.design) {
       // The site moved embedded images into its file store; keep working from those URLs
       const d = JSON.parse(res.design);
@@ -489,7 +509,17 @@ function MainApp() {
   };
 
   // Preview against a real document, rendered by the site's own print pipeline
-  const [live, setLive] = useState({ name: "", recent: [], result: null, busy: false, error: "" });
+  const [live, setLive] = useState({ name: "", recent: [], result: null, pdf: null, busy: false, error: "" });
+  const renderLivePdf = async (name) => {
+    if (!name.trim()) return;
+    setLive(l => ({ ...l, busy: true, error: "" }));
+    try {
+      const pdf = await frappePdf("preview_pdf", { doctype, docname: name.trim(), html: jinja });
+      setLive(l => { if (l.pdf) URL.revokeObjectURL(l.pdf); return { ...l, busy: false, result: null, pdf }; });
+    } catch (e) {
+      setLive(l => ({ ...l, busy: false, error: e.message }));
+    }
+  };
   useEffect(() => {
     if (!FRAPPE || !preview || isReport) return;
     frappeCall("recent_docs", { doctype }).then(recent => setLive(l => ({ ...l, recent: recent || [] })), () => { });
@@ -500,18 +530,20 @@ function MainApp() {
     try {
       const r = await frappeCall("preview", { doctype, docname: name.trim(), html: jinja });
       const page = `<!doctype html><html><head><meta charset="utf-8">${r.css_url ? `<link rel="stylesheet" href="${r.css_url}">` : ""}<style>${r.style}</style><style>body{margin:0}</style></head><body><div class="print-format-gutter"><div class="print-format">${r.html}</div></div></body></html>`;
-      setLive(l => ({ ...l, busy: false, result: page }));
+      setLive(l => ({ ...l, busy: false, result: page, pdf: null }));
     } catch (e) {
       setLive(l => ({ ...l, busy: false, error: e.message }));
     }
   };
 
-  const loadSiteDesign = (name, data) => {
+  const loadSiteDesign = (name, data, modified = "") => {
     setTree(migrateTree(data.tree));
     setDoctype(data.doctype);
     setDocFields(data.docFields || []);
     setAssets(data.assets || []);
     setPrintFormat(name);
+    setSiteModified(modified);
+    setDesignId(uid());
     setSel(null);
     setActivePageIdx(0);
     setShowHistoryModal(false);
@@ -521,18 +553,22 @@ function MainApp() {
   useEffect(() => {
     const name = FRAPPE && new URLSearchParams(window.location.search).get("format");
     if (!name) return;
-    frappeCall("get_design", { print_format: name }).then(d => loadSiteDesign(d.name, JSON.parse(d.design)), e => alert(e.message));
+    frappeCall("get_design", { print_format: name }).then(d => loadSiteDesign(d.name, JSON.parse(d.design), d.modified), e => alert(e.message));
   }, []);
 
   const saveDesign = useCallback(() => {
     setSaveStatus("saving");
     const history = JSON.parse(localStorage.getItem("pf_history") || "[]");
-    const existingIdx = history.findIndex(h => h.name === doctype);
+    const existingIdx = history.findIndex(h => h.id === designId);
     const newEntry = {
-      id: existingIdx >= 0 ? history[existingIdx].id : uid(),
-      name: doctype,
+      id: designId,
+      name: printFormat || doctype,
+      doctype,
       tree,
       docFields,
+      assets,
+      printFormat,
+      siteModified,
       updatedAt: Date.now(),
       nodeCount: Object.keys(tree.nodes).length
     };
@@ -540,22 +576,25 @@ function MainApp() {
     if (existingIdx >= 0) history[existingIdx] = newEntry;
     else history.unshift(newEntry);
 
-    localStorage.setItem("pf_history", JSON.stringify(history));
-    setTimeout(() => { setSaveStatus("saved"); setTimeout(() => setSaveStatus(null), 2000); }, 600);
-  }, [tree, doctype, docFields]);
+    const ok = store("pf_history", history);
+    setTimeout(() => { setSaveStatus(ok ? "saved" : "full"); setTimeout(() => setSaveStatus(null), ok ? 2000 : 6000); }, 300);
+  }, [tree, doctype, docFields, assets, printFormat, siteModified, designId, store]);
 
   const loadDesign = (entry) => {
-    setTree(entry.tree);
-    setDoctype(entry.name);
-    setDocFields(entry.docFields);
-    setPrintFormat("");
+    setTree(migrateTree(entry.tree));
+    setDoctype(entry.doctype || entry.name);
+    setDocFields(entry.docFields || []);
+    setAssets(entry.assets || []);
+    setPrintFormat(entry.printFormat || "");
+    setSiteModified(entry.siteModified || "");
+    setDesignId(entry.id || uid());
     setSel(null);
     setShowHistoryModal(false);
   };
 
   const deleteSaved = (id) => {
     const history = JSON.parse(localStorage.getItem("pf_history") || "[]");
-    localStorage.setItem("pf_history", JSON.stringify(history.filter(h => h.id !== id)));
+    store("pf_history", history.filter(h => h.id !== id));
   };
 
   const downloadJinja = () => {
@@ -618,7 +657,7 @@ function MainApp() {
       <div id="pf-editor-ui" style={{ height: 44, background: "var(--b1)", borderBottom: "1px solid var(--bd)", display: "flex", alignItems: "center", paddingInline: 12, flexShrink: 0, zIndex: 100 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 8, marginRight: 14 }}>
           <span style={{ fontWeight: 600, fontSize: 13 }}>PrintForge</span>
-          <span style={{ fontSize: 11, color: "var(--t2)" }}>Tagrit ERP</span>
+          {FRAPPE && <span style={{ fontSize: 11, color: "var(--t2)" }}>{FRAPPE.site}</span>}
         </div>
         <div style={{ width: 1, height: 24, background: "var(--bd)", marginRight: 10 }} />
         <button className="tb" onClick={newDesign} style={{ marginRight: 10 }}>
@@ -667,8 +706,8 @@ function MainApp() {
           <button onClick={() => setZoom(z => Math.min(2, +(z + .1).toFixed(2)))} style={{ background: "none", border: "none", color: "var(--t2)", cursor: "pointer", fontSize: 14, lineHeight: 1, padding: "0 2px" }}>+</button>
         </div>
         <div style={{ width: 1, height: 24, background: "var(--bd)", marginRight: 8 }} />
-        <button className="tb" onClick={saveDesign} style={{ border: "1px solid var(--bd)", color: saveStatus === "saved" ? "var(--gn)" : undefined }}>
-          {saveStatus === "saving" ? "Saving" : saveStatus === "saved" ? "Saved" : "Save"}
+        <button className="tb" onClick={saveDesign} style={{ border: "1px solid var(--bd)", color: saveStatus === "saved" ? "var(--gn)" : saveStatus === "full" ? "var(--rd)" : undefined }}>
+          {saveStatus === "saving" ? "Saving" : saveStatus === "saved" ? "Saved" : saveStatus === "full" ? "Not saved: browser storage is full" : "Save"}
         </button>
         <div style={{ position: "relative" }}>
           <button className={"tb" + (showExportMenu ? " on" : "")} onClick={() => setShowExportMenu(!showExportMenu)}>
@@ -740,15 +779,17 @@ function MainApp() {
               <input className="pi mono" list="pf-recent-docs" value={live.name} onChange={e => setLive(l => ({ ...l, name: e.target.value }))} onKeyDown={e => { if (e.key === "Enter") renderLive(live.name); }} placeholder="Document name" style={{ width: 220 }} />
               <datalist id="pf-recent-docs">{live.recent.map(n => <option key={n} value={n} />)}</datalist>
               <button className="bcb" disabled={live.busy || !live.name.trim()} onClick={() => renderLive(live.name)}>{live.busy ? "Rendering" : "Render"}</button>
-              {live.result && <button className="bcb" onClick={() => setLive(l => ({ ...l, result: null, error: "" }))}>Back to sample data</button>}
+              <button className="bcb" disabled={live.busy || !live.name.trim()} onClick={() => renderLivePdf(live.name)}>PDF</button>
+              {(live.result || live.pdf) && <button className="bcb" onClick={() => setLive(l => ({ ...l, result: null, pdf: null, error: "" }))}>Back to sample data</button>}
               {live.error && <span style={{ color: "var(--rd)" }}>{live.error}</span>}
               <div style={{ flex: 1 }} />
-              {live.result && <span style={{ color: "var(--t2)" }}>Rendered by the site, as the print view will show it</span>}
+              {(live.result || live.pdf) && <span style={{ color: "var(--t2)" }}>{live.pdf ? "The PDF the site produces for this document" : "Rendered by the site, as the print view will show it"}</span>}
             </div>
           )}
-          {FRAPPE && preview && !isReport && live.result && <iframe title="Print preview" srcDoc={live.result} style={{ flex: 1, width: "100%", border: 0, background: "#d1d8dd" }} />}
+          {FRAPPE && preview && !isReport && live.pdf && <iframe title="PDF preview" src={live.pdf} style={{ flex: 1, width: "100%", border: 0 }} />}
+          {FRAPPE && preview && !isReport && !live.pdf && live.result && <iframe title="Print preview" srcDoc={live.result} style={{ flex: 1, width: "100%", border: 0, background: "#d1d8dd" }} />}
           {!preview && !showCode && showRulers && <Ruler type="h" zoom={zoom} scrollPos={scrollPos.x} mousePos={mousePos} />}
-          <div style={{ display: FRAPPE && preview && !isReport && live.result ? "none" : "flex", flex: 1, overflow: "hidden" }}>
+          <div style={{ display: FRAPPE && preview && !isReport && (live.result || live.pdf) ? "none" : "flex", flex: 1, overflow: "hidden" }}>
             {!preview && !showCode && showRulers && <Ruler type="v" zoom={zoom} scrollPos={scrollPos.y} mousePos={mousePos} />}
 
             <div className="cv" onScroll={handleScroll} style={{ flex: 1, overflow: "auto", display: "flex", alignItems: "flex-start", justifyContent: "center", padding: 40, position: "relative" }} onClick={() => setSel(null)}>
@@ -825,10 +866,15 @@ function MainApp() {
                         ref={pidx === 0 ? printRef : null}
                         className="pf-print-area"
                         onMouseDown={() => setActivePageIdx(pidx)}
-                        style={{ position: "relative", width: pg.w, minHeight: pg.h, background: "#ffffff", boxShadow: isPrinting ? "none" : "0 0 0 1px rgba(0,0,0,.1),0 2px 8px rgba(0,0,0,.12)", padding: page.padding ?? 40, display: "flex", flexDirection: "column", outline: !preview && !showCode && activePageIdx === pidx ? "1px solid var(--ac)" : "none" }}
+                        style={{ position: "relative", width: pg.w, minHeight: pg.h, ...(settings.font ? { fontFamily: settings.font } : {}), background: "#ffffff", boxShadow: isPrinting ? "none" : "0 0 0 1px rgba(0,0,0,.1),0 2px 8px rgba(0,0,0,.12)", padding: page.padding ?? 40, display: "flex", flexDirection: "column", outline: !preview && !showCode && activePageIdx === pidx ? "1px solid var(--ac)" : "none" }}
                         onClick={e => { if (e.target === e.currentTarget) setSel(null); }}>
                         {!preview && !showCode && !isPrinting && showGrid && (
                           <div className="pf-grid" style={{ "--gc": "rgba(0,0,0,.04)", "--gs": gridSize + "px" }} />
+                        )}
+                        {!preview && !showCode && !isPrinting && (
+                          <div style={{ position: "absolute", inset: 0, overflow: "hidden", pointerEvents: "none" }}>
+                            {Array.from({ length: 12 }, (_, k) => <div key={k} title="Roughly where a printed page ends" style={{ position: "absolute", left: 0, right: 0, top: (page.padding ?? 40) + (k + 1) * contentH, borderTop: "1px dashed rgba(217,72,77,.6)" }} />)}
+                          </div>
                         )}
                         {page?.backgroundImg && !isPrinting && (
                           <div style={{ position: "absolute", inset: 0, pointerEvents: "none", zIndex: 0, opacity: page.bgOpacity ?? 0.3 }}>
@@ -863,6 +909,7 @@ function MainApp() {
       </div>
       <div style={{ height: 22, background: "var(--b0)", borderTop: "1px solid var(--bd)", display: "flex", alignItems: "center", paddingInline: 12, gap: 16, flexShrink: 0, fontSize: 10, color: "var(--t2)" }}>
         <span>{doctype}</span>
+        {storageFull && <span style={{ color: "var(--rd)" }}>Not being autosaved in this browser: storage is full. {FRAPPE ? "Publish" : "Export as JSON"} to keep your work.</span>}
         <span>{Object.keys(tree.nodes).length} elements</span>
         <div style={{ flex: 1 }} />
         <span>A4 · wkhtmltopdf</span>

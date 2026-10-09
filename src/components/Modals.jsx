@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { FRAPPE, frappeCall } from '../frappe.js';
-import { TAGRIT_DOCTYPES } from '../doctypes.js';
+import { PRESET_DOCTYPES } from '../doctypes.js';
 import { Txt, Sec } from './atoms.jsx';
 
 // ── Error Guardian ────────────────────────────────────────────────────────────
@@ -28,7 +28,7 @@ export class ErrorGuardian extends React.Component {
 // ── New Design Modal ──────────────────────────────────────────────────────────
 export function NewDesignModal({ onCancel, onCreate }) {
   const [doctype, setDoctype] = useState("Sales Invoice");
-  const [fields, setFields] = useState(TAGRIT_DOCTYPES.Selling[1].fields);
+  const [fields, setFields] = useState(PRESET_DOCTYPES.Selling[1].fields);
   const [activeCat, setActiveCat] = useState("Selling");
   const [nf, setNf] = useState({ name: "", label: "", isChild: false });
   // On a site, any doctype can be picked and its real fields loaded
@@ -91,7 +91,7 @@ export function NewDesignModal({ onCancel, onCreate }) {
           </Sec>}
           <Sec title={FRAPPE ? "Or start from a preset" : "Module"}>
             <div style={{ display: "flex", gap: 4, overflowX: "auto", paddingBottom: 8, scrollbarWidth: "none" }}>
-              {Object.keys(TAGRIT_DOCTYPES).map(cat => (
+              {Object.keys(PRESET_DOCTYPES).map(cat => (
                 <button key={cat} onClick={() => setActiveCat(cat)} style={{ padding: "5px 10px", fontSize: 11, fontWeight: 500, borderRadius: "var(--r4)", whiteSpace: "nowrap", border: "1px solid " + (activeCat === cat ? "var(--ac)" : "var(--bd)"), background: activeCat === cat ? "var(--ad)" : "var(--b2)", color: activeCat === cat ? "var(--ac)" : "var(--t2)", cursor: "pointer" }}>
                   {cat}
                 </button>
@@ -105,7 +105,7 @@ export function NewDesignModal({ onCancel, onCreate }) {
               {activeCat === "Other" ? (
                 <button onClick={() => { setDoctype("Blank Document"); setFields([]); setPrintFor("DocType"); }} style={{ padding: "8px 4px", fontSize: 11, borderRadius: "var(--r4)", background: "var(--ad)", border: "1px solid var(--ac)", color: "var(--t0)", cursor: "pointer" }}>Blank document</button>
               ) : (
-                TAGRIT_DOCTYPES[activeCat].map(p => (
+                PRESET_DOCTYPES[activeCat].map(p => (
                   <button key={p.label} onClick={() => { setDoctype(p.label); setFields(p.fields); setPrintFor("DocType"); }} style={{ padding: "8px 4px", fontSize: 11, borderRadius: "var(--r4)", background: doctype === p.label ? "var(--ad)" : "var(--b2)", border: "1px solid " + (doctype === p.label ? "var(--ac)" : "var(--bd)"), color: doctype === p.label ? "var(--t0)" : "var(--t1)", cursor: "pointer" }}>
                     {p.label}
                   </button>
@@ -159,7 +159,7 @@ export function DesignHistoryModal({ onCancel, onLoad, onDelete, onLoadSite }) {
   const openSite = async (name) => {
     try {
       const d = await frappeCall("get_design", { print_format: name });
-      onLoadSite(d.name, JSON.parse(d.design));
+      onLoadSite(d.name, JSON.parse(d.design), d.modified);
     } catch (e) {
       setSite(s => ({ ...s, error: e.message }));
     }
@@ -220,14 +220,15 @@ export function DesignHistoryModal({ onCancel, onLoad, onDelete, onLoadSite }) {
 export function PublishModal({ doctype, isReport, initialName, onCancel, onPublish }) {
   const [name, setName] = useState(initialName || doctype + " PrintForge");
   const [makeDefault, setMakeDefault] = useState(false);
-  const [state, setState] = useState(null); // null | "busy" | { error } | { done }
-  const submit = async () => {
+  const [state, setState] = useState(null); // null | "busy" | { error, conflict } | { done }
+  const submit = async (overwrite = false) => {
     if (!name.trim()) return;
     setState("busy");
     try {
-      setState({ done: await onPublish(name.trim(), makeDefault) });
+      setState({ done: await onPublish(name.trim(), makeDefault, overwrite) });
     } catch (e) {
-      setState({ error: e.message });
+      // The site's copy is newer than the one this design started from
+      setState({ error: e.message, conflict: e.excType === "TimestampMismatchError" });
     }
   };
   const done = state?.done;
@@ -255,7 +256,8 @@ export function PublishModal({ doctype, isReport, initialName, onCancel, onPubli
         )}
         <div style={{ padding: "12px 20px", borderTop: "1px solid var(--bd)", display: "flex", justifyContent: "flex-end", gap: 8 }}>
           <button onClick={onCancel} style={{ padding: "7px 14px", background: "transparent", border: "1px solid var(--bm)", color: "var(--t1)", borderRadius: "var(--r4)", fontSize: 12, cursor: "pointer" }}>{done ? "Close" : "Cancel"}</button>
-          {!done && <button onClick={submit} disabled={state === "busy" || !name.trim()} style={{ padding: "7px 14px", background: "var(--ac)", border: "1px solid var(--ac)", color: "#fff", borderRadius: "var(--r4)", fontSize: 12, fontWeight: 600, cursor: "pointer", opacity: state === "busy" || !name.trim() ? .6 : 1 }}>{state === "busy" ? "Publishing" : "Publish"}</button>}
+          {!done && state?.conflict && <button onClick={() => submit(true)} style={{ padding: "7px 14px", background: "transparent", border: "1px solid var(--rd)", color: "var(--rd)", borderRadius: "var(--r4)", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>Replace it</button>}
+          {!done && !state?.conflict && <button onClick={() => submit(false)} disabled={state === "busy" || !name.trim()} style={{ padding: "7px 14px", background: "var(--ac)", border: "1px solid var(--ac)", color: "#fff", borderRadius: "var(--r4)", fontSize: 12, fontWeight: 600, cursor: "pointer", opacity: state === "busy" || !name.trim() ? .6 : 1 }}>{state === "busy" ? "Publishing" : "Publish"}</button>}
         </div>
       </div>
     </div>

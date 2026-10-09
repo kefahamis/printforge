@@ -96,3 +96,77 @@ describe('on a Frappe site', () => {
     expect(screen.queryByText(/Created/)).toBeNull()
   })
 })
+
+describe('editing on the canvas', () => {
+  const saved = () => JSON.parse(localStorage.getItem('pf_current')).tree
+  const count = () => Number(/(\d+) elements/.exec(document.body.textContent)[1])
+
+  it('adds an element, deletes it with the keyboard and brings it back with undo', async () => {
+    const App = await loadApp()
+    render(<App />)
+    const before = count()
+    fireEvent.click(button('Text'))
+    expect(count()).toBe(before + 1)
+    fireEvent.keyDown(window, { key: 'Delete' })
+    expect(count()).toBe(before)
+    fireEvent.keyDown(window, { key: 'z', ctrlKey: true })
+    expect(count()).toBe(before + 1)
+  })
+
+  it('selects an element when it is pressed and shows its properties', async () => {
+    const App = await loadApp()
+    const { container } = render(<App />)
+    const table = Object.values(saved().nodes).find(n => n.type === 'table')
+    fireEvent.mouseDown(container.querySelector(`[data-pf-node="${table.id}"]`))
+    expect(screen.getByText('Columns')).toBeTruthy()
+    expect(container.querySelectorAll('.rh')).toHaveLength(8)
+  })
+
+  it('resizes the selected element by dragging a handle, allowing for zoom', async () => {
+    const App = await loadApp()
+    const { container } = render(<App />)
+    fireEvent.click(button('Text'))
+    const added = () => Object.values(saved().nodes).find(n => n.content === '{{ doc.field_name }}')
+    expect(added().w).toBe(240)
+    fireEvent.mouseDown(container.querySelector('.rh-e'), { clientX: 0, clientY: 0 })
+    fireEvent.mouseMove(window, { clientX: 76, clientY: 0 }) // 76 screen px at 76% zoom = 100 page px
+    fireEvent.mouseUp(window)
+    expect(added().w).toBe(340)
+  })
+
+  it('keeps working when browser storage is full, and says so', async () => {
+    localStorage.setItem = () => { throw new DOMException('quota', 'QuotaExceededError') }
+    const App = await loadApp()
+    render(<App />)
+    expect(screen.getByText(/Not being autosaved in this browser/)).toBeTruthy()
+    fireEvent.click(button('Text'))
+    expect(screen.getByText(/Not being autosaved in this browser/)).toBeTruthy()
+  })
+})
+
+describe('publishing over a newer copy', () => {
+  it('stops, explains, and only replaces it when told to', async () => {
+    const sent = []
+    window.PF_FRAPPE = { csrf_token: 'tok', user: 'Administrator', site: 'erp.test', print_font: 'Inter, sans-serif' }
+    vi.stubGlobal('fetch', vi.fn(async (url, opts) => {
+      const method = url.split('.').pop()
+      const args = JSON.parse(opts.body)
+      if (method !== 'publish') return { ok: true, status: 200, json: async () => ({ message: [] }) }
+      sent.push(args)
+      if (!args.overwrite) {
+        return { ok: false, status: 417, statusText: 'Expectation Failed', json: async () => ({ exc_type: 'TimestampMismatchError', _server_messages: JSON.stringify([JSON.stringify({ message: 'Changed on the site by someone else.' })]) }) }
+      }
+      return { ok: true, status: 200, json: async () => ({ message: { name: args.print_format, created: false, is_default: false, modified: '2026-10-09 21:00:00', route: '/x', design: null } }) }
+    }))
+    const App = await loadApp()
+    render(<App />)
+    fireEvent.click(button('Publish'))
+    fireEvent.click(screen.getAllByRole('button', { name: 'Publish' }).pop())
+    await waitFor(() => expect(screen.getByText('Changed on the site by someone else.')).toBeTruthy())
+    expect(sent).toHaveLength(1)
+
+    fireEvent.click(button('Replace it'))
+    await waitFor(() => expect(screen.getByText(/Updated “Sales Invoice PrintForge”/)).toBeTruthy())
+    expect(sent[1].overwrite).toBe(1)
+  })
+})

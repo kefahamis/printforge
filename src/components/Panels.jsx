@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { PAGE_SIZES, getSettings, marginMm } from '../exporter.js';
+import { PAGE_SIZES, FONTS, getSettings, marginMm } from '../exporter.js';
 import { uid, dc, findParent, getDepth, mkT, mkC, mkI } from '../tree.js';
 import { FRAPPE, frappeCall } from '../frappe.js';
 import { Num, Txt, RichTextEditor, Sel, CRow, Sec, Sdiv } from './atoms.jsx';
@@ -135,11 +135,17 @@ export function Props({ tree, selected, docFields, onUpdate, onDelete, onDup, on
         <div className="prow">
           <Num label="Margins" value={page?.padding ?? 40} onChange={v => up("padding", v)} unit="px" min={0} />
         </div>
-        <p style={{ fontSize: 10, color: "var(--t2)", marginBottom: 12 }}>{marginMm(tree)} mm on every side of the printed page.</p>
+        <p style={{ fontSize: 10, color: "var(--t2)", marginBottom: 12 }}>{marginMm(tree)} mm on every side of the printed page. The red lines on the page show roughly where each printed page ends.</p>
+        <div className="prow" style={{ marginBottom: 12 }}>
+          <Sel label="Font" value={settings.font || ""} onChange={v => onUpdateSettings({ font: v })} options={FONTS.map(f => ({ v: f, l: f ? f.split(",")[0].replace(/"/g, "") : "Site print font" }))} />
+        </div>
         <label style={{ display: "flex", alignItems: "flex-start", gap: 6, fontSize: 11, color: "var(--t1)", marginBottom: 4, cursor: "pointer" }}>
           <input type="checkbox" checked={!!settings.letterHead} onChange={e => onUpdateSettings({ letterHead: e.target.checked })} style={{ accentColor: "var(--ac)", marginTop: 2 }} />Use the site's letter head and footer
         </label>
         <p style={{ fontSize: 10, color: "var(--t2)", marginBottom: 12 }}>{settings.letterHead ? "Added above and below this design when printing. Top and bottom margins then come from the site." : "Off: the design is printed exactly as drawn, and the Letter Head option in the print dialog has no effect."}</p>
+        {settings.printFor !== "Report" && <label style={{ display: "flex", alignItems: "flex-start", gap: 6, fontSize: 11, color: "var(--t1)", marginBottom: 8, cursor: "pointer" }}>
+          <input type="checkbox" checked={settings.statusHeading !== false} onChange={e => onUpdateSettings({ statusHeading: e.target.checked })} style={{ accentColor: "var(--ac)", marginTop: 2 }} />Print DRAFT / CANCELLED above unsubmitted documents
+        </label>}
         {settings.printFor !== "Report" && <label style={{ display: "flex", alignItems: "flex-start", gap: 6, fontSize: 11, color: "var(--t1)", marginBottom: 12, cursor: "pointer" }}>
           <input type="checkbox" checked={!!settings.pageNumbers} onChange={e => onUpdateSettings({ pageNumbers: e.target.checked })} style={{ accentColor: "var(--ac)", marginTop: 2 }} />Page numbers at the bottom of every page
         </label>}
@@ -213,6 +219,9 @@ export function Props({ tree, selected, docFields, onUpdate, onDelete, onDup, on
         {el.repeat && <p style={{ fontSize: 10, color: "var(--t2)", margin: "4px 0 0" }}>Printed in the {el.repeat === "header" ? "top" : "bottom"} margin of every page, in place of the site's letter head {el.repeat}. The margin grows to fit it.</p>}
         <Sdiv />
       </>}
+      <Txt label="Show only if" value={el.showIf || ""} onChange={v => u("showIf", v || undefined)} mono ph={settings.printFor === "Report" ? "filters.company" : "doc.discount_amount"} />
+      <p style={{ fontSize: 10, color: "var(--t2)", margin: "4px 0 0" }}>{el.showIf ? "Printed only when this is set or true for the document." : "Leave empty to always print it."}</p>
+      <Sdiv />
       {!el._flow && !isRoot && el.type !== "container" && <><Sec title="Layout"><div className="prow"><Num label="X" value={el.x} onChange={v => u("x", v)} unit="px" /><Num label="Y" value={el.y} onChange={v => u("y", v)} unit="px" /></div><div className="prow"><Num label="W" value={el.w} onChange={v => u("w", v)} unit="px" /><Num label="H" value={el.h} onChange={v => u("h", v)} unit="px" /></div></Sec><Sdiv /></>}
       {isRoot && <><Sec title="Layout"><div className="prow"><Num label="W" value={el.w} onChange={v => u("w", v)} unit="px" /><Num label="H" value={el.h} onChange={v => u("h", v)} unit="px" /></div></Sec><Sdiv /></>}
 
@@ -423,14 +432,18 @@ export function Props({ tree, selected, docFields, onUpdate, onDelete, onDup, on
       </>}
 
       {el.type === "table" && <>
-        <Sec title="Data Source"><Txt label="Child field" value={el.childField || ""} onChange={v => u("childField", v)} mono /></Sec>
+        {settings.printFor !== "Report" && <Sec title="Data Source">
+          <Txt label="Child table" value={el.childField || ""} onChange={v => u("childField", v)} mono list="pf-child-tables" />
+          <datalist id="pf-child-tables">{docFields.filter(f => f.isChild).map(f => <option key={f.name} value={f.name}>{f.label}</option>)}</datalist>
+        </Sec>}
+        <datalist id="pf-table-columns">{(settings.printFor === "Report" ? docFields.filter(f => !f.isChild) : (docFields.find(f => f.isChild && f.name === el.childField)?.columns || [])).map(f => <option key={f.name} value={f.name}>{f.label}</option>)}</datalist>
         <Sdiv />
         <Sec title="Columns">
           {(el.columns || []).map((col, i) => (
             <div key={col.id} style={{ marginBottom: 8, padding: 8, background: "var(--b3)", borderRadius: "var(--r6)", border: "1px solid var(--bd)" }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}><span style={{ fontSize: 10, color: "var(--t2)", fontWeight: 600 }}>Col {i + 1}</span><button className="ib del" onClick={() => u("columns", (el.columns || []).filter((_, j) => j !== i))} style={{ width: 20, height: 20, fontSize: 11 }}>×</button></div>
               <div className="prow"><Txt label="Label" value={col.label} onChange={v => { const c = [...(el.columns || [])]; c[i] = { ...col, label: v }; u("columns", c); }} /></div>
-              <div className="prow"><Txt label="Field" value={col.field} onChange={v => { const c = [...(el.columns || [])]; c[i] = { ...col, field: v }; u("columns", c); }} mono /><Txt label="Width" value={col.width} onChange={v => { const c = [...(el.columns || [])]; c[i] = { ...col, width: v }; u("columns", c); }} /></div>
+              <div className="prow"><Txt label="Field" value={col.field} onChange={v => { const c = [...(el.columns || [])]; c[i] = { ...col, field: v }; u("columns", c); }} mono list="pf-table-columns" /><Txt label="Width" value={col.width} onChange={v => { const c = [...(el.columns || [])]; c[i] = { ...col, width: v }; u("columns", c); }} /></div>
               <div className="prow"><Sel label="Align" value={col.align} onChange={v => { const c = [...(el.columns || [])]; c[i] = { ...col, align: v }; u("columns", c); }} options={["left", "center", "right"]} /></div>
             </div>
           ))}

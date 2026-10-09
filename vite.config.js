@@ -12,8 +12,8 @@ const frappeBuild = {
             input: 'src/main.jsx',
             output: {
                 entryFileNames: 'printforge.js',
-                chunkFileNames: '[name].js',
-                assetFileNames: '[name][extname]',
+                chunkFileNames: '[name]-[hash].js',
+                assetFileNames: '[name]-[hash][extname]',
             },
         },
     },

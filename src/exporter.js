@@ -6,7 +6,9 @@
 // from a top-level `.print-format { ... }` CSS rule. The output here is built for that.
 
 export const PAGE_SIZES = { A4: [794, 1123], A5: [559, 794], A3: [1123, 1587], Letter: [816, 1056], Legal: [816, 1344] };
-export const DEFAULT_SETTINGS = { pageSize: "A4", orientation: "Portrait", letterHead: false, pageNumbers: false, printFor: "DocType" };
+export const DEFAULT_SETTINGS = { pageSize: "A4", orientation: "Portrait", letterHead: false, pageNumbers: false, statusHeading: true, font: "", printFor: "DocType" };
+// "" means the site's print font
+export const FONTS = ["", "Arial, Helvetica, sans-serif", "Verdana, Geneva, sans-serif", "Tahoma, Geneva, sans-serif", "Georgia, serif", '"Times New Roman", Times, serif', '"Courier New", Courier, monospace'];
 export const getSettings = tree => ({ ...DEFAULT_SETTINGS, ...(tree?.settings || {}) });
 export const pageDims = tree => {
   const s = getSettings(tree);
@@ -50,10 +52,26 @@ const formatExpr = expr => {
   return m && !RAW_FIELDS.has(m[1]) ? `doc.get_formatted("${m[1]}")` : (expr || "").trim();
 };
 
+// Plain wording goes through Frappe's translator so it follows the print language. Text
+// that carries markup, template tags or quotes is passed through untouched.
+const translatable = t => typeof t === "string" && /[A-Za-z]/.test(t) && !/[{}<>%"\\\n]/.test(t);
+export const tr = (t, report = false) => translatable(t) ? `{{ ${report ? "__" : "_"}("${t}") }}` : (t || "");
+
 const flexSpacer = '<td class="pf-c"></td>';
 const fixedSpacer = w => `<td class="pf-c" style="width:${w}px;"></td>`;
 
+// An element with a "show only if" condition is wrapped in a template test. The syntax is
+// shared by Jinja and by the browser templates Frappe uses for reports.
 function renderNode(tree, id, indent, extraStyle = "", inFlow = false, report = false) {
+  const el = tree.nodes[id]; if (!el) return "";
+  const html = renderElement(tree, id, indent, extraStyle, inFlow, report);
+  const cond = (el.showIf || "").replace(/\{\{|\}\}|\{%|%\}/g, "").trim();
+  if (!cond || !html) return html;
+  const p = "  ".repeat(indent);
+  return `${p}{% if ${cond} %}\n${html}\n${p}{% endif %}`;
+}
+
+function renderElement(tree, id, indent, extraStyle = "", inFlow = false, report = false) {
   const el = tree.nodes[id]; if (!el) return "";
   const p = "  ".repeat(indent);
   const isRoot = tree.pages.some(p => (p.roots || []).includes(id));
@@ -118,7 +136,7 @@ function renderNode(tree, id, indent, extraStyle = "", inFlow = false, report = 
     }).join("\n");
   }
 
-  if (el.type === "text") return p + '<div style="' + base + 'min-height:' + el.h + 'px;' + (el.isRich ? '' : 'font-size:' + el.fontSize + 'px;font-weight:' + el.fontWeight + ';color:' + el.color + ';text-align:' + el.align + ';font-style:' + (el.italic ? "italic" : "normal") + ';line-height:' + el.lineHeight + ';white-space:pre-wrap;word-wrap:break-word;') + 'background:' + el.bg + ';padding:' + cssLen(el.padding) + ';border-radius:' + el.borderRadius + 'px;">' + (report ? (el.content || "") : formatRefs(el.content)) + '</div>';
+  if (el.type === "text") return p + '<div style="' + base + 'min-height:' + el.h + 'px;' + (el.isRich ? '' : 'font-size:' + el.fontSize + 'px;font-weight:' + el.fontWeight + ';color:' + el.color + ';text-align:' + el.align + ';font-style:' + (el.italic ? "italic" : "normal") + ';line-height:' + el.lineHeight + ';white-space:pre-wrap;word-wrap:break-word;') + 'background:' + el.bg + ';padding:' + cssLen(el.padding) + ';border-radius:' + el.borderRadius + 'px;">' + (el.isRich ? (el.content || "") : translatable(el.content) ? tr(el.content, report) : report ? (el.content || "") : formatRefs(el.content)) + '</div>';
 
   if (el.type === "rect") {
     const border = (el.strokeWidth || 0) + 'px ' + (el.style || "solid") + ' ' + (el.stroke || "transparent");
@@ -155,14 +173,14 @@ function renderNode(tree, id, indent, extraStyle = "", inFlow = false, report = 
 
   if (el.type === "table") {
     const cols = (el.columns || []).filter(Boolean);
-    const ths = cols.map(c => '<th style="width:' + (c.width || "auto") + ';text-align:' + (c.align || "left") + ';padding:7px 10px !important;font-size:' + (el.headerFontSize || 11) + 'px;font-weight:600;color:' + (el.headerColor || "inherit") + ';">' + (c.label || "") + '</th>').join("");
+    const ths = cols.map(c => '<th style="width:' + (c.width || "auto") + ';text-align:' + (c.align || "left") + ';padding:7px 10px !important;font-size:' + (el.headerFontSize || 11) + 'px;font-weight:600;color:' + (el.headerColor || "inherit") + ';">' + tr(c.label, report) + '</th>').join("");
     const tdSt = 'padding:6px 10px !important;font-size:' + (el.fontSize || 12) + 'px;color:' + (el.rowColor || "inherit") + ';border-bottom:1px solid ' + (el.borderColor || "transparent") + ';';
     const tds = cols.map(c => '<td style="text-align:' + (c.align || "left") + ';' + tdSt + '">' + formatRefs('{{ item.' + (c.field || "field") + ' }}', "item") + '</td>').join("");
     const rowBg = el.rowBg || "transparent", rowAltBg = el.rowAltBg || rowBg;
     const rowBgSt = rowAltBg === rowBg ? rowBg : "{{ '" + rowBg + "' if loop.index0 % 2 == 0 else '" + rowAltBg + "' }}";
     const footSt = 'padding:6px 10px !important;font-size:' + (el.fontSize || 12) + 'px;color:' + (el.rowColor || "inherit") + ';font-weight:600;';
     const foot = (el.footerRows || []).map(fr =>
-      p + '<tr style="page-break-inside:avoid;">' + (cols.length > 1 ? '<td colspan="' + (cols.length - 1) + '" style="text-align:right;' + footSt + '">' + (fr.label || "") + '</td>' : "") + '<td style="text-align:right;' + footSt + '">{{ ' + formatExpr(fr.expr) + ' }}</td></tr>\n').join("");
+      p + '<tr style="page-break-inside:avoid;">' + (cols.length > 1 ? '<td colspan="' + (cols.length - 1) + '" style="text-align:right;' + footSt + '">' + tr(fr.label, report) + '</td>' : "") + '<td style="text-align:right;' + footSt + '">{{ ' + formatExpr(fr.expr) + ' }}</td></tr>\n').join("");
     let tblSt = base.replace(/position:\s*relative;?/g, "").replace(/width:\s*[^;]+;?/g, "") + "width:100%;border-collapse:collapse;table-layout:fixed;";
     if (report) {
       // Report rows arrive as `data`; values go through the column's own formatter, as in Frappe's report grid
@@ -170,7 +188,7 @@ function renderNode(tree, id, indent, extraStyle = "", inFlow = false, report = 
       const rtds = cols.map(c => '<td style="text-align:' + (c.align || "left") + ';' + tdSt + '">' + cell(c.field || "field") + '</td>').join("");
       const rbg = rowAltBg === rowBg ? rowBg : `{{ row._index % 2 == 0 ? "${rowBg}" : "${rowAltBg}" }}`;
       const rfoot = (el.footerRows || []).map(fr =>
-        p + '<tr>' + (cols.length > 1 ? '<td colspan="' + (cols.length - 1) + '" style="text-align:right;' + footSt + '">' + (fr.label || "") + '</td>' : "") + '<td style="text-align:right;' + footSt + '">{{ ' + (fr.expr || "").trim() + ' }}</td></tr>\n').join("");
+        p + '<tr>' + (cols.length > 1 ? '<td colspan="' + (cols.length - 1) + '" style="text-align:right;' + footSt + '">' + tr(fr.label, report) + '</td>' : "") + '<td style="text-align:right;' + footSt + '">{{ ' + (fr.expr || "").trim() + ' }}</td></tr>\n').join("");
       return p + '<table style="' + tblSt + '">\n' + p + '<thead><tr style="background:' + (el.headerBg || "transparent") + ';color:' + (el.headerColor || "inherit") + ';">' + ths + '</tr></thead>\n' + p + '<tbody>\n' + p + '{% for row in data %}\n' + p + '<tr style="page-break-inside:avoid;background:' + rbg + ';' + '{% if row.is_total_row || row.bold %}font-weight:bold;{% endif %}">' + rtds + '</tr>\n' + p + '{% endfor %}\n' + rfoot + p + '</tbody>\n' + p + '</table>';
     }
     return p + '<table style="' + tblSt + '">\n' + p + '<thead><tr style="background:' + (el.headerBg || "transparent") + ';color:' + (el.headerColor || "inherit") + ';">' + ths + '</tr></thead>\n' + p + '<tbody>\n' + p + '{%for item in doc.' + (el.childField || "items") + '%}\n' + p + '<tr style="page-break-inside:avoid;background:' + rowBgSt + ';">' + tds + '</tr>\n' + p + '{%endfor%}\n' + foot + p + '</tbody>\n' + p + '</table>';
@@ -216,8 +234,9 @@ export function toPrintFormatHtml(tree, opts = {}) {
     const pageNumbers = !report && s.pageNumbers;
     const ownFooter = footerIds.length > 0 || (pageNumbers && !letterHead);
 
-    // Frappe's header/footer page adds 15mm of padding above and 5mm below the content;
-    // the 15mm is cancelled in CSS (.pf-rep) and replaced with the design's own margin.
+    // Frappe renders the *children* of #header-html / #footer-html on a separate page with
+    // 15mm of padding above and 5mm below. The 15mm is cancelled in CSS (.pf-rep-head/-foot,
+    // matched under that page's .wrapper) and replaced with the design's own margin.
     const topMm = headerIds.length ? pxToMm(pad + sum(headerIds)) + 5 : mm;
     const footGapMm = 2;
     const bottomMm = pxToMm(sum(footerIds) + (pageNumbers ? PAGE_NO_HEIGHT : 0)) + footGapMm + Math.max(mm, 5);
@@ -237,22 +256,31 @@ export function toPrintFormatHtml(tree, opts = {}) {
   @media screen { .print-format { margin: 0 auto !important; padding: ${pad}px !important; max-width: ${w}px !important; } }
   @media print { .print-format { margin: 0 !important; padding: 0 !important; } }
   .pf-doc, .pf-doc * { box-sizing: border-box; }
-  .pf-doc { color: #111111; -webkit-print-color-adjust: exact; }
+  .pf-doc { color: #111111; -webkit-print-color-adjust: exact;${s.font ? " font-family: " + s.font + ";" : ""} }
   .pf-doc div, .pf-doc p { margin: 0; }
   .pf-doc table { width: 100%; border-collapse: collapse; table-layout: fixed; margin: 0; }
   .print-format .pf-doc td.pf-c { padding: 0 !important; border: 0 !important; }
   .pf-doc img { max-width: 100%; display: block; }
   .pf-page, .pf-rep { position: relative; width: ${w - pad * 2}px; max-width: 100%; }
-  .wrapper > #header-html > .pf-rep { margin-top: -15mm; padding-top: ${pad}px; }
-  .wrapper > #footer-html > .pf-rep { margin-top: -15mm; padding-top: ${footGapMm}mm; }
+  .wrapper > .pf-rep-head { margin-top: -15mm; padding-top: ${pad}px; }
+  .wrapper > .pf-rep-foot { margin-top: -15mm; padding-top: ${footGapMm}mm; }
 `;
 
     const roots = ids => ids.map(id => renderNode(tree, id, 1, "", true, report)).join("\n");
     const pageNo = `<p class="visible-pdf" style="text-align:center;font-size:9px;line-height:${PAGE_NO_HEIGHT}px;color:#555555;">{{ _("Page {0} of {1}").format('<span class="page"></span>', '<span class="topage"></span>') }}</p>`;
 
+    // What Frappe's standard format prints above unsubmitted and cancelled documents
+    const status = !report && s.statusHeading ? `{%- if doc.meta.is_submittable and doc.docstatus == 0 and print_settings.add_draft_heading %}
+<div document-status="draft" style="text-align:center;"><h4 style="margin:0;">{{ _("DRAFT") }}</h4></div>
+{%- endif %}
+{%- if doc.meta.is_submittable and doc.docstatus == 2 %}
+<div document-status="cancelled" style="text-align:center;"><h4 style="margin:0;">{{ _("CANCELLED") }}</h4></div>
+{%- endif %}
+` : "";
+
     let head = "";
     if (headerIds.length) {
-      head = `<div id="header-html">\n<div class="pf-doc pf-rep">\n${roots(headerIds)}\n</div>\n</div>\n`;
+      head = `<div id="header-html">\n<div class="pf-doc pf-rep pf-rep-head">\n${roots(headerIds)}\n</div>\n</div>\n`;
     } else if (letterHead) {
       // Same structure Frappe's standard format uses, so the print dialog's Letter Head
       // option and the site's "Repeat Header and Footer" setting both apply.
@@ -266,7 +294,7 @@ export function toPrintFormatHtml(tree, opts = {}) {
 
     let foot = "";
     if (ownFooter) {
-      foot = `\n<div id="footer-html">\n<div class="pf-doc pf-rep">\n${roots(footerIds)}${pageNumbers ? "\n" + pageNo : ""}\n</div>\n</div>`;
+      foot = `\n<div id="footer-html">\n<div class="pf-doc pf-rep pf-rep-foot">\n${roots(footerIds)}${pageNumbers ? "\n" + pageNo : ""}\n</div>\n</div>`;
     } else if (letterHead) {
       const repeat = pageNumbers ? "" : "{% if print_settings.repeat_header_footer %}";
       const end = pageNumbers ? "" : "{% endif %}";
@@ -286,7 +314,7 @@ export function toPrintFormatHtml(tree, opts = {}) {
       const rootsHtml = roots((page.roots || []).filter(id => !repeated.has(id)));
       return `<div class="pf-page"${i < last ? ' style="page-break-after:always;"' : ""}>\n${rootsHtml}\n</div>`;
     }).join("\n");
-    return `<style>${css}</style>\n<div class="pf-doc">\n${head}${pagesHtml}${foot}\n</div>`;
+    return `<style>${css}</style>\n<div class="pf-doc">\n${head}${status}${pagesHtml}${foot}\n</div>`;
   } catch (e) {
     console.error("Jinja generation error:", e);
     return "Error generating Jinja template. Please check console.";
@@ -314,4 +342,23 @@ ${toPrintFormatHtml(tree, opts)}
 <style>@media print { .print-format { padding: ${pad}px !important; } }</style>
 </body>
 </html>`;
+}
+
+// Height in px of the area one printed page has for the design's own content, so the
+// canvas can show roughly where pages end. With only the site letter head in use the
+// vertical margins belong to the site; Frappe's 15mm is assumed.
+export function pageContentHeight(tree, opts = {}) {
+  const s = getSettings(tree);
+  const report = s.printFor === "Report";
+  const pad = pagePadding(tree);
+  const mm = marginMm(tree);
+  const headerIds = report ? [] : repeatRoots(tree, "header");
+  const footerIds = report ? [] : repeatRoots(tree, "footer");
+  const sum = ids => ids.reduce((a, id) => a + rootHeight(tree, id, opts.heights), 0);
+  const letterHead = !report && s.letterHead;
+  const pageNumbers = !report && s.pageNumbers;
+  const ownFooter = footerIds.length > 0 || (pageNumbers && !letterHead);
+  const top = headerIds.length ? pxToMm(pad + sum(headerIds)) + 5 : letterHead ? 15 : mm;
+  const bottom = ownFooter ? pxToMm(sum(footerIds) + (pageNumbers ? PAGE_NO_HEIGHT : 0)) + 2 + Math.max(mm, 5) : letterHead ? 15 : mm;
+  return Math.max(100, Math.round(pageDims(tree).h - (top + bottom) * 96 / 25.4));
 }

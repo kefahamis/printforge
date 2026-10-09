@@ -31,23 +31,31 @@ export function Num({ label, value, onChange, unit, min, max }) {
     </div>
   );
 }
-export function Txt({ label, value, onChange, mono, ph, rows }) {
+export function Txt({ label, value, onChange, mono, ph, rows, list }) {
   const cls = "pi" + (mono ? " mono" : "");
   return (
     <div className="pf">
       {label && <label>{label}</label>}
-      {rows ? <textarea className={cls} value={value} onChange={e => onChange(e.target.value)} rows={rows} placeholder={ph} style={{ resize: "vertical", lineHeight: 1.6 }} /> : <input className={cls} value={value} onChange={e => onChange(e.target.value)} placeholder={ph} />}
+      {rows ? <textarea className={cls} value={value} onChange={e => onChange(e.target.value)} rows={rows} placeholder={ph} style={{ resize: "vertical", lineHeight: 1.6 }} /> : <input className={cls} value={value} onChange={e => onChange(e.target.value)} placeholder={ph} list={list} />}
     </div>
   );
 }
+// Quill and its stylesheet are only fetched the first time a rich text element is edited
+const loadQuill = () => Promise.all([import('quill'), import('quill/dist/quill.snow.css'), import('../quill-theme.css')]).then(([m]) => m.default);
+
 export function RichTextEditor({ value, onChange }) {
   const ref = useRef(null);
   const quillRef = useRef(null);
   const skip = useRef(false);
 
+  const latest = useRef(value);
+  latest.current = value;
+
   useEffect(() => {
-    if (ref.current && !quillRef.current && window.Quill) {
-      quillRef.current = new window.Quill(ref.current, {
+    let cancelled = false;
+    loadQuill().then(Quill => {
+      if (cancelled || !ref.current || quillRef.current) return;
+      quillRef.current = new Quill(ref.current, {
         theme: 'snow',
         modules: {
           toolbar: [
@@ -57,12 +65,14 @@ export function RichTextEditor({ value, onChange }) {
           ]
         }
       });
+      quillRef.current.root.innerHTML = latest.current || '';
       quillRef.current.on('text-change', () => {
         if (!skip.current) {
           onChange(quillRef.current.root.innerHTML);
         }
       });
-    }
+    });
+    return () => { cancelled = true; };
   }, [onChange]);
 
   useEffect(() => {

@@ -1,6 +1,6 @@
 
 
-export const TAGRIT_DOCTYPES = {
+export const PRESET_DOCTYPES = {
   "Selling": [
     { label: "Sales Order", fields: [{ name: "name", label: "Order #" }, { name: "customer", label: "Customer" }, { name: "transaction_date", label: "Date" }, { name: "delivery_date", label: "Delivery" }, { name: "grand_total", label: "Total" }, { name: "items", isChild: true }] },
     { label: "Sales Invoice", fields: [{ name: "name", label: "Invoice #" }, { name: "customer", label: "Customer" }, { name: "posting_date", label: "Date" }, { name: "due_date", label: "Due" }, { name: "grand_total", label: "Total" }, { name: "items", isChild: true }, { name: "taxes", isChild: true }] },

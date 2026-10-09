@@ -32,26 +32,22 @@ by default means the System Manager role.
 
 ### Check after the first install
 
-The Frappe side was written without a bench to run it on, so confirm these on a real
-site before relying on it:
+The PDF output has been checked with wkhtmltopdf 0.12.6 (the engine Frappe uses) driven
+with Frappe v15's own options, stylesheet and header/footer template: page scale,
+margins, repeating header and footer, page numbers and the site letter head all came
+out as designed. What has not been run is the app inside a real site, so confirm:
 
 1. `/printforge` loads the builder full-screen, and `/app/printforge` shows it framed
    inside the desk.
-2. Publish the starter invoice, open a Sales Invoice, pick the new format, and
-   download the PDF. Check the table and the totals block line up as they do in the
-   builder.
-3. Check the PDF margins and that nothing is cut off on the right. The design's
-   margins are written into the format's CSS as a `.print-format { margin-*: … }`
-   rule, which is where Frappe's wkhtmltopdf step reads them from, and also into the
-   Print Format's margin fields for newer PDF generators.
-4. In the builder, open Preview, enter a real document name and press Render. That
-   runs the unsaved design through the site's own print pipeline.
-5. If you use a repeating header or footer, print a document long enough to reach a
-   second page and check the header does not overlap the content. The margins are
-   sized from how Frappe lays out its header and footer pages, which could only be
-   read from its source here, not run.
-6. If you make a report format, pick it in the report's Print dialog and check the
+2. Publishing creates the Print Format, and it can be picked when printing.
+3. In Preview, enter a real document name and press **Render**, then **PDF**. Both go
+   through the site's own print pipeline with the unsaved design.
+4. A Print Format made here shows **Edit in PrintForge** on its form.
+5. If you make a report format, pick it in the report's Print dialog and check the
    rows and totals.
+
+Frappe versions newer than 15 have not been checked. Newer branches add a Chrome-based
+PDF generator; the layout here is built for wkhtmltopdf.
 
 ## Using it
 
@@ -81,11 +77,26 @@ PrintForge. Use a different name in that case.
   choose *Repeat as the page header* (or footer). It is printed in the margin of every
   page, the margin grows to fit it, and it takes the place of the site's letter head
   there. *Page numbers at the bottom of every page* is a separate Page-panel option.
-- **Paper.** Paper size, orientation and margins are set in the Page panel.
-- **Font.** The page is drawn in the site's print font (Print Settings), and published
-  formats inherit it.
+- **Conditions.** Any element can have a *Show only if* test, such as
+  `doc.discount_amount`; it is printed only when that is set or true.
+- **Draft and cancelled.** DRAFT or CANCELLED is printed above unsubmitted documents,
+  as standard formats do and subject to the same Print Settings option. It can be
+  switched off in the Page panel.
+- **Translation.** Plain wording (labels, column headings) is sent through Frappe's
+  translator, so it follows the print language. Text containing markup or template
+  tags is left as typed.
+- **Paper.** Paper size, orientation and margins are set in the Page panel. Dashed red
+  lines on the canvas show roughly where each printed page ends.
+- **Font.** By default the page is drawn in the site's print font (Print Settings) and
+  published formats inherit it. A design can pick one of a few fonts every PDF server
+  has instead.
 - **Images.** Images added in the builder are moved into the site's public files on
-  publish instead of being embedded in the format.
+  publish, attached to the Print Format, and removed again once the design stops using
+  them. SVG images stay embedded.
+- **Child tables.** Loading a doctype's fields also loads the columns of its child
+  tables, offered as suggestions when setting up a table.
+- **Two people, one format.** Publishing over a copy that changed on the site since you
+  opened it stops and asks before replacing it.
 - **Print Format form.** Formats made here get an *Edit in PrintForge* button. Editing
   their HTML by hand is overwritten on the next publish.
 
@@ -123,6 +134,7 @@ npm install
 npm run dev              # standalone, http://localhost:5173
 npm test                 # exporter, design-tree and editor tests
 npm run lint
+python -m unittest printforge/tests/test_utils.py   # site-independent Python helpers
 npm run build:frappe     # rebuild printforge/public/dist/
 ```
 
@@ -131,6 +143,10 @@ reload, if the app folder is the one the bench uses) to serve the new bundle.
 
 The standalone dev server has no site behind it, so Publish, Load fields from site
 and the site list in History only appear when the builder is opened through Frappe.
+
+Designs are autosaved in the browser and can be kept in its saved list with **Save**.
+Browser storage is small; if it fills up the editor says so and keeps working, and
+publishing or exporting as JSON is then the way to keep the work.
 
 ## Layout
 
@@ -143,7 +159,9 @@ and the site list in History only appear when the builder is opened through Frap
 | `src/frappe.js` | Calls to the site API |
 | `src/styles.js`, `src/doctypes.js` | Editor stylesheet; preset doctype list |
 | `src/*.test.js(x)` | Tests |
-| `printforge/api.py` | Site API: publish, preview with a document, open designs, doctypes, reports and fields |
+| `printforge/api.py` | Site API: publish, preview (HTML and PDF), open designs, doctypes, reports and fields |
+| `printforge/utils.py` | Helpers that need no site; tested in `printforge/tests/` |
+| `.github/workflows/ci.yml` | Lint, tests and build on every push |
 | `printforge/public/js/print_format.js` | *Edit in PrintForge* button on the Print Format form |
 | `printforge/install.py` | Creates the `printforge_design` custom field |
 | `printforge/www/printforge.*` | The full-screen builder page at `/printforge` |

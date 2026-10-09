@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { formatRefs, pageDims, marginMm, toPrintFormatHtml, toStandaloneHtml } from './exporter.js'
+import { formatRefs, tr, pageDims, marginMm, pageContentHeight, toPrintFormatHtml, toStandaloneHtml } from './exporter.js'
 
 const text = (id, content, o = {}) => ({ id, type: "text", children: [], w: 100, h: 20, content, fontSize: 12, fontWeight: "400", color: "#111", align: "left", italic: false, lineHeight: 1.5, bg: "transparent", padding: 0, borderRadius: 0, isRich: false, _flow: true, ...o })
 const box = (id, children, o = {}) => ({ id, type: "container", children, w: "100%", h: 20, fill: "transparent", stroke: "transparent", strokeWidth: 0, borderRadius: 0, opacity: 1, padding: 0, mode: "flow", layout: "flex", flexDir: "row", justifyContent: "flex-start", alignItems: "stretch", gap: 0, ...o })
@@ -105,11 +105,11 @@ describe('repeating header and footer', () => {
   it('moves marked elements into the blocks Frappe repeats on every page', () => {
     const html = toPrintFormatHtml(t())
     const header = html.slice(html.indexOf('<div id="header-html">'), html.indexOf('<div class="pf-page"'))
-    expect(header).toContain('>Header</div>')
+    expect(header).toContain('{{ _("Header") }}')
     const page = html.slice(html.indexOf('<div class="pf-page"'), html.indexOf('<div id="footer-html">'))
-    expect(page).toContain('>Body</div>')
-    expect(page).not.toContain('>Header</div>')
-    expect(html.slice(html.indexOf('<div id="footer-html">'))).toContain('>Footer</div>')
+    expect(page).toContain('{{ _("Body") }}')
+    expect(page).not.toContain('{{ _("Header") }}')
+    expect(html.slice(html.indexOf('<div id="footer-html">'))).toContain('{{ _("Footer") }}')
   })
   it('grows the page margins to make room, preferring measured heights', () => {
     // top: 40px margin + 40px header = 21.2mm, plus Frappe's 5mm below the header
@@ -142,5 +142,38 @@ describe('report formats', () => {
     expect(html).not.toContain('get_formatted')
     expect(html).not.toContain('id="header-html"')
     expect(html).not.toContain('letter_head')
+  })
+})
+
+describe('conditions, status and wording', () => {
+  it('wraps an element with a condition in a template test', () => {
+    const html = toPrintFormatHtml(tree([text("a", "Discount", { showIf: "{{ doc.discount_amount }}" })], ["a"]))
+    expect(html).toMatch(/\{% if doc\.discount_amount %\}\n\s*<div[^>]*>\{\{ _\("Discount"\) \}\}<\/div>\n\s*\{% endif %\}/)
+  })
+  it('prints the draft and cancelled headings a standard format would, unless switched off', () => {
+    const on = toPrintFormatHtml(tree([text("a", "hi")], ["a"]))
+    expect(on).toContain('doc.docstatus == 0 and print_settings.add_draft_heading')
+    expect(on).toContain('{{ _("CANCELLED") }}')
+    expect(toPrintFormatHtml(tree([text("a", "hi")], ["a"], { settings: { statusHeading: false } }))).not.toContain('document-status')
+  })
+  it('sends plain wording through the translator and leaves templates and markup alone', () => {
+    expect(tr('Bill to')).toBe('{{ _("Bill to") }}')
+    expect(tr('Account', true)).toBe('{{ __("Account") }}')
+    expect(tr('{{ doc.name }}')).toBe('{{ doc.name }}')
+    expect(tr('<b>Total</b>')).toBe('<b>Total</b>')
+    expect(tr('He said "hi"')).toBe('He said "hi"')
+    expect(tr('12.50')).toBe('12.50')
+  })
+  it('sets a design font only when one is chosen', () => {
+    expect(toPrintFormatHtml(tree([text("a", "hi")], ["a"]))).not.toContain('font-family')
+    expect(toPrintFormatHtml(tree([text("a", "hi")], ["a"], { settings: { font: "Georgia, serif" } }))).toContain('font-family: Georgia, serif;')
+  })
+})
+
+describe('pageContentHeight', () => {
+  it('is the page height less the margins the PDF will use', () => {
+    expect(pageContentHeight(tree([text("a", "hi")], ["a"]))).toBe(1043) // 1123 - 2 x 40
+    const withHeader = tree([text("h", "Header", { h: 40, repeat: "header" }), text("b", "Body")], ["h", "b"])
+    expect(pageContentHeight(withHeader)).toBeLessThan(1043 - 40)
   })
 })
