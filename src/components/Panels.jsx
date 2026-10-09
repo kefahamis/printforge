@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { PAGE_SIZES, CUSTOM_PAPERS, FONTS, getSettings, marginMm } from '../exporter.js';
+import { PAGE_SIZES, CUSTOM_PAPERS, FONTS, getSettings, marginMm, watermarkFields } from '../exporter.js';
 import { uid, dc, findParent, getDepth, isDesc, isFree, mkT, mkC, mkI } from '../tree.js';
 import { BLOCKS } from '../templates.js';
 import { FRAPPE, frappeCall } from '../frappe.js';
@@ -184,6 +184,51 @@ export function Breadcrumb({ tree, selected, onSelect }) {
   );
 }
 
+// ── Watermark ─────────────────────────────────────────────────────────────────
+// Besides fixed wording, a watermark can print whatever a field of the document holds, so
+// one design says PAID, OVERDUE or DRAFT as the document's own status changes.
+function Watermark({ settings, docFields, onUpdateSettings }) {
+  const fields = watermarkFields(docFields);
+  const mode = settings.watermark || "";
+  const current = settings.watermarkField || "status";
+  const known = fields.find(f => f.name === current);
+  const value = mode === "field" ? (known ? "field:" + current : "field:") : mode;
+  const pick = v => {
+    if (v.startsWith("field:")) onUpdateSettings({ watermark: "field", watermarkField: v.slice(6) || (known ? "" : current), watermarkSkip: [] });
+    else onUpdateSettings({ watermark: v });
+  };
+  const sample = f => (f.options || []).slice(0, 3).join(", ");
+  const options = [
+    { v: "", l: "None" },
+    { v: "status", l: "DRAFT / CANCELLED until submitted" },
+    ...fields.map(f => ({ v: "field:" + f.name, l: (f.label || f.name) + (sample(f) ? " (" + sample(f) + ((f.options || []).length > 3 ? ", …" : "") + ")" : " of the document") })),
+    { v: "field:", l: fields.length ? "Another field…" : "A field of the document…" },
+    { v: "text", l: "Your own text" },
+  ];
+  const skip = settings.watermarkSkip || [];
+  const toggle = (v, on) => onUpdateSettings({ watermarkSkip: on ? skip.filter(x => x !== v) : [...skip, v] });
+  return <>
+    <div className="prow" style={{ marginBottom: 4 }}>
+      <Sel label="Watermark" value={value} onChange={pick} options={options} />
+    </div>
+    {mode === "text" && <div className="prow" style={{ marginBottom: 4 }}><Txt value={settings.watermarkText || ""} onChange={v => onUpdateSettings({ watermarkText: v })} ph="COPY" /></div>}
+    {mode === "field" && !known && <div className="prow" style={{ marginBottom: 4 }}><Txt label="Field name" value={settings.watermarkField || ""} onChange={v => onUpdateSettings({ watermarkField: v })} mono ph="status" /></div>}
+    {mode === "field" && known && (known.options || []).length > 0 && <div style={{ marginBottom: 6 }}>
+      <div style={{ fontSize: 10, color: "var(--t2)", marginBottom: 4 }}>Print it when the {known.label || known.name} is</div>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: "2px 10px" }}>
+        {known.options.map(o => <label key={o} style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 11, color: "var(--t1)", cursor: "pointer" }}>
+          <input type="checkbox" checked={!skip.includes(o)} onChange={e => toggle(o, e.target.checked)} style={{ accentColor: "var(--ac)" }} />{o}
+        </label>)}
+      </div>
+    </div>}
+    <p style={{ fontSize: 10, color: "var(--t2)", marginBottom: 12 }}>{
+      mode === "status" ? "Printed faintly across every page of a draft or cancelled document, and not at all once it is submitted."
+        : mode === "text" ? "Printed faintly across every page."
+          : mode === "field" ? (known && (known.options || []).length ? "Each document prints its own value, in capitals, faintly across every page. Untick a value to print nothing for it." : "Each document prints whatever this field holds, in capitals, faintly across every page." + (FRAPPE && known ? " Use Load fields from site on the Doctype tab to choose which values print." : ""))
+            : "Faint text across every page."}</p>
+  </>;
+}
+
 // ── Props panel ───────────────────────────────────────────────────────────────
 export function Props({ tree, selected, multi = [], onAlign, onDistribute, onDeleteMany, onDupMany, onCopy, docFields, onUpdate, onDelete, onDup, onZOrder, onAddChild, onUpdateSettings, showRulers, setShowRulers, showGrid, setShowGrid, gridSize, setGridSize, activePageIdx, onUpdatePage, penMode, setPenMode, selPointIdx, setSelPointIdx }) {
   const el = selected ? tree.nodes[selected] : null;
@@ -267,11 +312,7 @@ export function Props({ tree, selected, multi = [], onAlign, onDistribute, onDel
           <input type="checkbox" checked={!!settings.pageNumbers} onChange={e => onUpdateSettings({ pageNumbers: e.target.checked })} style={{ accentColor: "var(--ac)", marginTop: 2 }} />Page numbers at the bottom of every page
         </label>}
         {settings.printFor !== "Report" && <>
-          <div className="prow" style={{ marginBottom: 4 }}>
-            <Sel label="Watermark" value={settings.watermark || ""} onChange={v => onUpdateSettings({ watermark: v })} options={[{ v: "", l: "None" }, { v: "status", l: "DRAFT / CANCELLED by status" }, { v: "text", l: "Your own text" }]} />
-          </div>
-          {settings.watermark === "text" && <div className="prow" style={{ marginBottom: 4 }}><Txt value={settings.watermarkText || ""} onChange={v => onUpdateSettings({ watermarkText: v })} ph="COPY" /></div>}
-          <p style={{ fontSize: 10, color: "var(--t2)", marginBottom: 12 }}>{settings.watermark === "status" ? "Printed faintly across every page of a draft or cancelled document, and not at all once it is submitted." : settings.watermark === "text" ? "Printed faintly across every page." : "Faint text across every page."}</p>
+          <Watermark settings={settings} docFields={docFields} onUpdateSettings={onUpdateSettings} />
         </>}
         {showGrid && (
           <div className="prow">

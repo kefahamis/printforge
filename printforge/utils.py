@@ -65,6 +65,9 @@ def fields_from_meta(fields, child_fields=None):
 		# The builder offers the fields of the linked document too
 		if df.get("fieldtype") == "Link" and df.get("options"):
 			field["link"] = df["options"]
+		# The fixed values of a Select field, e.g. the states a document's status can take
+		if df.get("fieldtype") == "Select" and df.get("options"):
+			field["options"] = [o.strip() for o in str(df["options"]).splitlines() if o.strip()]
 		if field["isChild"] and child_fields and df.get("options"):
 			field["columns"] = [
 				{"name": c["name"], "label": c["label"], "fieldtype": c["fieldtype"]}

@@ -166,6 +166,10 @@ function MainApp() {
   const pg = pageDims(tree);
   const settings = getSettings(tree);
   // `padding` also resets the page margins, for paper sizes the usual margin would swamp
+  // What the canvas shows for the watermark; a field's value differs per document, so its
+  // first printable value stands in
+  const watermarkSample = settings.watermark === "status" ? "DRAFT" : settings.watermark === "text" ? settings.watermarkText
+    : settings.watermark === "field" ? (((docFields.find(f => f.name === settings.watermarkField)?.options || []).find(o => !(settings.watermarkSkip || []).includes(o)) || settings.watermarkField || "").replace(/_/g, " ").toUpperCase()) : "";
   const updateSettings = (ch, padding) => record({ ...tree, settings: { ...settings, ...ch }, ...(padding == null ? {} : { pages: tree.pages.map(pg => ({ ...pg, padding })) }) });
   useEffect(() => { injectStyles(theme, pg, density); }, [theme, pg.w, pg.h, density]);
 
@@ -1046,8 +1050,8 @@ function MainApp() {
                             {Array.from({ length: 12 }, (_, k) => <div key={k} title="Roughly where a printed page ends" style={{ position: "absolute", left: 0, right: 0, top: (page.padding ?? 40) + (k + 1) * contentH, borderTop: "1px dashed rgba(217,72,77,.6)" }} />)}
                           </div>
                         )}
-                        {!isReport && (settings.watermark === "status" || (settings.watermark === "text" && settings.watermarkText)) && (
-                          <div style={{ position: "absolute", top: Math.round(pg.h * 0.3), left: 0, width: "100%", textAlign: "center", lineHeight: 1, fontSize: Math.max(18, Math.round(pg.w / 8)), fontWeight: 700, letterSpacing: Math.round(Math.max(18, Math.round(pg.w / 8)) / 12), color: "rgba(0,0,0,.09)", transform: "rotate(-30deg)", pointerEvents: "none", whiteSpace: "nowrap" }}>{settings.watermark === "status" ? "DRAFT" : settings.watermarkText}</div>
+                        {!isReport && watermarkSample && (
+                          <div style={{ position: "absolute", top: Math.round(pg.h * 0.3), left: 0, width: "100%", textAlign: "center", lineHeight: 1, fontSize: Math.max(18, Math.round(pg.w / 8)), fontWeight: 700, letterSpacing: Math.round(Math.max(18, Math.round(pg.w / 8)) / 12), color: "rgba(0,0,0,.09)", transform: "rotate(-30deg)", pointerEvents: "none", whiteSpace: "nowrap" }}>{watermarkSample}</div>
                         )}
                         {page?.backgroundImg && !isPrinting && (
                           <div style={{ position: "absolute", inset: 0, pointerEvents: "none", zIndex: 0, opacity: page.bgOpacity ?? 0.3 }}>

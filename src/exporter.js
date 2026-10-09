@@ -15,7 +15,7 @@ export const CUSTOM_PAPERS = [
   { label: "Label 100 x 50 mm", w: 100, h: 50, margin: 8 },
   { label: "Label 50 x 25 mm", w: 50, h: 25, margin: 4 },
 ];
-export const DEFAULT_SETTINGS = { pageSize: "A4", orientation: "Portrait", letterHead: false, pageNumbers: false, statusHeading: true, font: "", printFor: "DocType", customW: 80, customH: 200, watermark: "", watermarkText: "" };
+export const DEFAULT_SETTINGS = { pageSize: "A4", orientation: "Portrait", letterHead: false, pageNumbers: false, statusHeading: true, font: "", printFor: "DocType", customW: 80, customH: 200, watermark: "", watermarkText: "", watermarkField: "status", watermarkSkip: [] };
 const mmToPx = mm => Math.round(mm * 96 / 25.4);
 const customMm = s => {
   const w = Math.max(10, Number(s.customW) || 80), h = Math.max(10, Number(s.customH) || 200);
@@ -97,6 +97,15 @@ function renderNode(tree, id, indent, extraStyle = "", inFlow = false, report = 
   const gap = el.breakAfter ? `\n${p}{% if not loop.last %}<div style="page-break-after:always;"></div>{% endif %}` : "";
   return `${p}{% for item in doc.${each} %}\n${shown}${gap}\n${p}{% endfor %}`;
 }
+
+// The field a "value of a field" watermark reads; only a plain field name is accepted
+export const watermarkField = s => String(s.watermarkField || "").replace(/[^A-Za-z0-9_]/g, "");
+// Fields whose value makes sense as a watermark: fixed lists of states. The document's
+// status and workflow state come first; the naming series is a Select but never a state.
+const STATE_FIELDS = ["status", "workflow_state"];
+export const watermarkFields = docFields => (docFields || [])
+  .filter(f => !f.isChild && f.name !== "naming_series" && (f.fieldtype === "Select" || STATE_FIELDS.includes(f.name)))
+  .sort((x, y) => (STATE_FIELDS.includes(y.name) ? 1 : 0) - (STATE_FIELDS.includes(x.name) ? 1 : 0));
 
 // The value a QR code or barcode encodes, as a template expression
 export const codeExpr = el => {
@@ -313,6 +322,12 @@ export function toPrintFormatHtml(tree, opts = {}) {
     if (!report && s.watermark === "status") {
       wmSet = `{%- set pf_wm = _("DRAFT") if (doc.meta.is_submittable and doc.docstatus == 0) else (_("CANCELLED") if doc.docstatus == 2 else "") %}\n`;
       watermark = `{% if pf_wm %}${wmLayer("{{ pf_wm }}").trimEnd()}{% endif %}\n`;
+    } else if (!report && s.watermark === "field" && watermarkField(s)) {
+      // The value the document holds in that field right now (Paid, Overdue, Draft ...), in
+      // the print language and in capitals. Values the design opts out of print nothing.
+      const skip = (s.watermarkSkip || []).filter(v => typeof v === "string" && v);
+      wmSet = `{%- set pf_wm = doc.get("${watermarkField(s)}") or "" %}\n` + (skip.length ? `{%- set pf_wm = "" if pf_wm in ${JSON.stringify(skip)} else pf_wm %}\n` : "");
+      watermark = `{% if pf_wm %}${wmLayer("{{ _(pf_wm) | upper }}").trimEnd()}{% endif %}\n`;
     } else if (!report && s.watermark === "text" && (s.watermarkText || "").trim()) {
       watermark = wmLayer(tr(s.watermarkText.trim()));
     }

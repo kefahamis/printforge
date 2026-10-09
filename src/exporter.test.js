@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { formatRefs, tr, pageDims, marginMm, pageContentHeight, toPrintFormatHtml, toStandaloneHtml } from './exporter.js'
+import { formatRefs, tr, pageDims, marginMm, pageContentHeight, toPrintFormatHtml, toStandaloneHtml, watermarkFields } from './exporter.js'
 
 const text = (id, content, o = {}) => ({ id, type: "text", children: [], w: 100, h: 20, content, fontSize: 12, fontWeight: "400", color: "#111", align: "left", italic: false, lineHeight: 1.5, bg: "transparent", padding: 0, borderRadius: 0, isRich: false, _flow: true, ...o })
 const box = (id, children, o = {}) => ({ id, type: "container", children, w: "100%", h: 20, fill: "transparent", stroke: "transparent", strokeWidth: 0, borderRadius: 0, opacity: 1, padding: 0, mode: "flow", layout: "flex", flexDir: "row", justifyContent: "flex-start", alignItems: "stretch", gap: 0, ...o })
@@ -252,5 +252,28 @@ describe('elements pinned by the Move tool', () => {
   it('are placed from the printed page box, which starts inside the margins', () => {
     const html = toPrintFormatHtml(tree([text("a", "hi", { _free: true, x: 140, y: 240, w: 100 })], ["a"]))
     expect(html).toContain('position:absolute;left:100px;top:200px;width:100px;')
+  })
+})
+
+describe('watermark from a field', () => {
+  const t = tree([text("a", "hi")], ["a"])
+  it('prints what the document holds in that field, translated and in capitals', () => {
+    const html = toPrintFormatHtml({ ...t, settings: { watermark: "field", watermarkField: "status" } })
+    expect(html).toContain('{%- set pf_wm = doc.get("status") or "" %}')
+    expect(html).toContain('>{{ _(pf_wm) | upper }}</div>')
+    expect(html).toContain('{% if pf_wm %}<div class="pf-wms">')
+  })
+  it('prints nothing for the values the design opts out of', () => {
+    const html = toPrintFormatHtml({ ...t, settings: { watermark: "field", watermarkField: "status", watermarkSkip: ["Paid", 'Say "no"'] } })
+    expect(html).toContain('{%- set pf_wm = "" if pf_wm in ["Paid","Say \\"no\\""] else pf_wm %}')
+  })
+  it('accepts only a field name, and is left out of report formats', () => {
+    expect(toPrintFormatHtml({ ...t, settings: { watermark: "field", watermarkField: 'x") or evil("' } })).toContain('doc.get("xorevil")')
+    expect(toPrintFormatHtml({ ...t, settings: { watermark: "field", watermarkField: "" } })).not.toContain('pf-wm')
+    expect(toPrintFormatHtml({ ...t, settings: { watermark: "field", watermarkField: "status", printFor: "Report" } })).not.toContain('pf_wm')
+  })
+  it('offers fields that hold a fixed list of states, the document status first', () => {
+    const fields = [{ name: "naming_series", fieldtype: "Select" }, { name: "apply_discount_on", fieldtype: "Select" }, { name: "customer", fieldtype: "Link" }, { name: "status", fieldtype: "Select" }, { name: "workflow_state", fieldtype: "Link" }, { name: "items", fieldtype: "Table", isChild: true }]
+    expect(watermarkFields(fields).map(f => f.name)).toEqual(["status", "workflow_state", "apply_discount_on"])
   })
 })

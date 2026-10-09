@@ -159,9 +159,13 @@ PrintForge. Use a different name in that case.
 - **Receipts and labels.** Besides A3/A4/A5/Letter/Legal, the Page panel has a custom
   size in millimetres with presets for 80 mm and 58 mm receipt rolls and common label
   sizes. A receipt's height is fixed, as the PDF step needs one; set it to suit.
-- **Watermark.** DRAFT / CANCELLED by document status, or your own text (COPY), printed
-  faintly across every page. It is placed once per page height, so on a document whose
-  page breaks are forced it can sit higher or lower from page to page.
+- **Watermark.** Printed faintly across every page. It can be DRAFT / CANCELLED until
+  the document is submitted, your own text (COPY), or the value of a field of the
+  document: choose *Status* and each document prints its own state (PAID, OVERDUE,
+  DRAFT ...) in the print language. The list offers the doctype's Select fields with
+  their values, and each value can be unticked so it prints nothing (no mark once Paid,
+  say). The mark is placed once per page height, so on a document whose page breaks are
+  forced it can sit higher or lower from page to page.
 - **Several elements at once.** Shift+click adds to the selection. The group can be
   copied, cut, pasted (Ctrl+C / X / V, also into another design), duplicated, deleted
   and nudged. Lining up and even spacing apply to elements placed freely in the same

@@ -83,6 +83,10 @@ class TestFieldsFromMeta(unittest.TestCase):
 		self.assertEqual(fields[0]["link"], "Customer")
 		self.assertNotIn("link", fields[1])
 
+	def test_select_fields_list_their_values(self):
+		fields = utils.fields_from_meta([{"fieldname": "status", "label": "Status", "fieldtype": "Select", "options": "\nDraft\nPaid\n Overdue \n"}])
+		self.assertEqual(fields[0]["options"], ["Draft", "Paid", "Overdue"])
+
 	def test_child_tables_carry_their_columns(self):
 		asked = []
 
