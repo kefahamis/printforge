@@ -289,3 +289,41 @@ describe('checks before publishing on a site', () => {
     expect(screen.getAllByRole('button', { name: 'Publish' }).pop().disabled).toBe(true)
   })
 })
+
+describe('right-click on empty space', () => {
+  it('shows the builder\'s own menu instead of the browser\'s, on the page surround, panels and toolbar', async () => {
+    const App = await loadApp()
+    const { container } = render(<App />)
+    for (const where of ['.cv', '#pf-editor-ui']) {
+      const shown = fireEvent.contextMenu(container.querySelector(where))
+      expect(shown, where).toBe(false) // false: the browser's menu was cancelled
+      expect(screen.getByRole('menu')).toBeTruthy()
+      expect(screen.getByRole('menuitem', { name: /Add page/ })).toBeTruthy()
+      expect(screen.getByRole('menuitem', { name: /Paste/ }).disabled).toBe(true) // nothing copied yet
+      fireEvent.mouseDown(screen.getByRole('menu').parentElement)
+      expect(screen.queryByRole('menu')).toBeNull()
+    }
+  })
+  it('runs what is picked', async () => {
+    const App = await loadApp()
+    const { container } = render(<App />)
+    const pages = () => JSON.parse(localStorage.getItem('pf_current')).tree.pages.length
+    fireEvent.contextMenu(container.querySelector('.cv'))
+    fireEvent.click(screen.getByRole('menuitem', { name: /Add page/ }))
+    expect(pages()).toBe(2)
+    fireEvent.contextMenu(container.querySelector('.cv'))
+    fireEvent.click(screen.getByRole('menuitem', { name: /Undo/ }))
+    expect(pages()).toBe(1)
+  })
+  it('leaves the browser\'s menu for a field being typed in, and offers no editing in Preview', async () => {
+    const App = await loadApp()
+    const { container } = render(<App />)
+    fireEvent.click(button('Text'))
+    expect(fireEvent.contextMenu(container.querySelector('textarea.pi'))).toBe(true)
+    expect(screen.queryByRole('menu')).toBeNull()
+    fireEvent.click(button('Preview'))
+    expect(fireEvent.contextMenu(container.querySelector('.cv'))).toBe(false)
+    expect(screen.queryByRole('menuitem', { name: /Add page/ })).toBeNull()
+    expect(screen.getByRole('menuitem', { name: /Back to editing/ })).toBeTruthy()
+  })
+})

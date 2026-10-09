@@ -675,11 +675,50 @@ function MainApp() {
       { id: "back", label: "Send to back", run: () => zOrder(nodeId, "back") },
       "sep",
       { id: "parent", label: "Select its container", kbd: "Esc", disabled: !findParent(tree, nodeId), run: () => setSel(findParent(tree, nodeId)) },
-    ] : [
-      { id: "page", label: "Add page", run: () => addPage() },
-      { id: "gallery", label: "Start from a template", run: () => setShowGallery(true) },
-    ];
+    ] : blankMenu();
     setContextMenu({ x: e.clientX, y: e.clientY, items });
+  };
+
+  // What a right-click on empty space offers, anywhere in the builder: the page, the
+  // area around it, the panels and the toolbar. It stands in for the browser's own menu.
+  const blankMenu = () => {
+    const editing = !preview && !showCode;
+    let hasClip = false;
+    try { hasClip = !!localStorage.getItem("pf_clip"); } catch (err) { /* storage unavailable: nothing to paste */ }
+    return [
+      ...(editing ? [
+        { id: "paste", label: "Paste", kbd: "Ctrl+V", disabled: !hasClip, run: () => pasteClip() },
+        { id: "page", label: "Add page", run: () => addPage() },
+        "sep",
+      ] : [
+        { id: "edit", label: "Back to editing", run: () => { setPreview(false); setShowCode(false); } },
+        "sep",
+      ]),
+      { id: "undo", label: "Undo", kbd: "Ctrl+Z", disabled: past.length === 0, run: () => undo() },
+      { id: "redo", label: "Redo", kbd: "Ctrl+Y", disabled: future.length === 0, run: () => redo() },
+      "sep",
+      { id: "gallery", label: "Start from a template", run: () => setShowGallery(true) },
+      { id: "new", label: "New design", run: () => setShowNewModal(true) },
+      { id: "copyhtml", label: "Copy the Print Format HTML", run: () => copy() },
+      "sep",
+      ...(editing ? [
+        { id: "grid", label: showGrid ? "Hide the grid" : "Show the grid", run: () => setShowGrid(g => !g) },
+        { id: "rulers", label: showRulers ? "Hide the rulers" : "Show the rulers", run: () => setShowRulers(r => !r) },
+      ] : []),
+      { id: "theme", label: theme === "dark" ? "Light theme" : "Dark theme", run: () => setTheme(t => t === "dark" ? "light" : "dark") },
+      { id: "palette", label: "All commands", kbd: "Ctrl+K", run: () => setShowPalette(true) },
+    ];
+  };
+  // The browser's menu is left alone only where it does a job this one cannot: pasting
+  // into and spell-checking a field that is being typed in.
+  const onBlankContextMenu = (e) => {
+    if (e.defaultPrevented) return;
+    const t = e.target;
+    if (["INPUT", "TEXTAREA", "SELECT"].includes(t.tagName) || t.isContentEditable) return;
+    e.preventDefault();
+    // Over an open dialog there is nothing sensible to offer; the browser's menu still stays away
+    if (showNewModal || showHistoryModal || showPublish || showGallery || showPalette || showRemap) return;
+    openContextMenu(e, null);
   };
 
   const commands = [
@@ -922,7 +961,7 @@ function MainApp() {
   };
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", height: "100vh", overflow: "hidden", background: "var(--b0)", color: "var(--t0)" }}>
+    <div onContextMenu={onBlankContextMenu} style={{ display: "flex", flexDirection: "column", height: "100vh", overflow: "hidden", background: "var(--b0)", color: "var(--t0)" }}>
       <div id="pf-editor-ui" style={{ height: 44, background: "var(--b1)", borderBottom: "1px solid var(--bd)", display: "flex", alignItems: "center", paddingInline: 12, flexShrink: 0, zIndex: 100 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 8, marginRight: 14 }}>
           <span style={{ fontWeight: 600, fontSize: 13 }}>PrintForge</span>

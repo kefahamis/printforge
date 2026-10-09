@@ -211,6 +211,11 @@ PrintForge. Use a different name in that case.
   also leaves it out when printing. Both are undone from the Layers tab. Ctrl+G wraps
   the selected neighbours in a container and Ctrl+Shift+G undoes that.
 
+- **Right-click.** Anywhere in the builder that is not an element, a right-click opens
+  the builder's own menu (paste, add page, undo, templates, grid, all commands) in place
+  of the browser's. An element has its own menu. A field you are typing in keeps the
+  browser's menu, which is what offers paste and spelling there.
+
 To give each company its own layout from one format, give the parts that differ a *Show
 only if* such as `doc.company == "Acme Ltd"`. PrintForge does not change which format
 Frappe picks by default for a company.

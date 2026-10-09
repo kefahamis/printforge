@@ -81,7 +81,8 @@ export function CommandPalette({ commands, onCancel }) {
 // ── Right-click menu ──────────────────────────────────────────────────────────
 export function ContextMenu({ x, y, items, onClose }) {
   // Keep the menu inside the window
-  const left = Math.min(x, window.innerWidth - 200), top = Math.min(y, window.innerHeight - items.length * 30 - 16);
+  const height = items.reduce((a, it) => a + (it === "sep" ? 9 : 28), 0) + 10;
+  const left = Math.max(4, Math.min(x, window.innerWidth - 200)), top = Math.max(4, Math.min(y, window.innerHeight - height - 4));
   return (
     <div style={{ position: "fixed", inset: 0, zIndex: 3000 }} onMouseDown={onClose} onContextMenu={e => { e.preventDefault(); onClose(); }}>
       <div role="menu" onMouseDown={e => e.stopPropagation()} style={{ position: "fixed", left, top, minWidth: 184, background: "var(--b1)", border: "1px solid var(--bd)", borderRadius: "var(--r6)", boxShadow: "0 4px 12px rgba(0,0,0,.18)", padding: 4 }}>
