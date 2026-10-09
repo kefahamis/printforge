@@ -76,12 +76,13 @@ export const BLOCKS = [
 // ── Full documents ────────────────────────────────────────────────────────────
 // One A4 layout serves the trading documents: header, party and reference panel, rows,
 // totals beside notes, then signatures.
-function tradeDocument({ title, accent = "#111111", companyLines = [], partyLabel, partyLines, meta, table, totals = [], left = [], signatures }) {
+// `companyExpr`: where the company comes from on a doctype that has no company field of its own
+function tradeDocument({ title, accent = "#111111", companyExpr = "doc.company", companyLines = [], partyLabel, partyLines, meta, table, totals = [], left = [], signatures }) {
   const head = Row([
-    [{ ...mkI(0, 0), w: 130, h: 60, _flow: true }],
+    [{ ...mkI(0, 0), w: 130, h: 60, _flow: true, ...(companyExpr === "doc.company" ? {} : { jinjaExpr: '{{ frappe.db.get_value("Company", ' + companyExpr + ', "company_logo") }}' }) }],
     Col([
       T(title, { h: 30, fontSize: 22, fontWeight: "700", color: accent, align: "right", lineHeight: 1.3 }),
-      T("{{ doc.company }}", { h: 18, fontSize: 12, fontWeight: "600", align: "right" }),
+      T("{{ " + companyExpr + " }}", { h: 18, fontSize: 12, fontWeight: "600", align: "right" }),
       ...companyLines.map(l => cond(l, { h: 14, fontSize: 9, color: "#333333", align: "right", lineHeight: 1.4 })),
     ], { w: 440, h: 70, gap: 1 }),
   ], { h: 84, padding: "0 0 14px 0" });
@@ -215,6 +216,75 @@ const deliveryLabels = () => {
   return toTree([[{ ...c, repeatFor: "items", breakAfter: true }, ...rest]], { pageSize: "Custom", customW: 100, customH: 50, statusHeading: false }, 8);
 };
 
+const creditNote = () => tradeDocument({
+  title: "CREDIT NOTE", accent: "#c2410c",
+  companyLines: ["{{ doc.company_address_display }}", ["PIN: " + COMPANY_PIN, COMPANY_PIN_EXPR]],
+  partyLabel: "Credit to", partyLines: ["{{ doc.customer_name }}", "{{ doc.address_display }}", ["PIN: {{ doc.tax_id }}", "doc.tax_id"]],
+  meta: [["Credit note no.", "{{ doc.name }}"], ["Date", "{{ doc.posting_date }}"], ["Against invoice", "{{ doc.return_against }}", "doc.return_against"]],
+  table: Table("items", itemColumns, { headerBg: "#fdebe1" }),
+  totals: tradeTotals,
+  left: [inWords, T("{{ doc.remarks }}", { h: 30, fontSize: 9, color: "#444444", showIf: "doc.remarks" })],
+  signatures: ["Prepared by", "Authorised signature"],
+});
+
+const proforma = () => tradeDocument({
+  title: "PROFORMA INVOICE", accent: "#1f6feb",
+  companyLines: ["{{ doc.company_address_display }}", ["PIN: " + COMPANY_PIN, COMPANY_PIN_EXPR]],
+  partyLabel: "Prepared for", partyLines: ["{{ doc.customer_name }}", "{{ doc.address_display }}"],
+  meta: [["Proforma no.", "{{ doc.name }}"], ["Date", "{{ doc.transaction_date }}"], ["Delivery by", "{{ doc.delivery_date }}", "doc.delivery_date"], ["Customer PO", "{{ doc.po_no }}", "doc.po_no"]],
+  table: Table("items", itemColumns),
+  totals: tradeTotals,
+  left: [inWords, T("This is not a tax invoice. Goods are released on payment.", { h: 16, fontSize: 9, color: "#444444" }), paymentDetails()],
+});
+
+const packingSlip = () => tradeDocument({
+  title: "PACKING SLIP",
+  companyExpr: 'frappe.db.get_value("Delivery Note", doc.delivery_note, "company")',
+  partyLabel: "For delivery note", partyLines: ["{{ doc.delivery_note }}"],
+  meta: [["Packing slip no.", "{{ doc.name }}"], ["From package", "{{ doc.from_case_no }}"], ["To package", "{{ doc.to_case_no }}", "doc.to_case_no"], ["Gross weight", "{{ doc.gross_weight_pkg }}", "doc.gross_weight_pkg"]],
+  table: Table("items", [col("No.", "idx", "left", "8%"), col("Item code", "item_code", "left", "24%"), col("Description", "item_name", "left", "40%"), col("Qty", "qty", "right", "14%"), col("Unit", "stock_uom", "left", "14%")]),
+  left: [[{ ...mkBarcode(0, 0), w: 240, h: 56, _flow: true }]],
+  signatures: ["Packed by", "Checked by"],
+});
+
+const paymentVoucher = () => tradeDocument({
+  title: "PAYMENT VOUCHER", accent: "#6b5bd2",
+  partyLabel: "Paid to", partyLines: ["{{ doc.party_name }}"],
+  meta: [["Voucher no.", "{{ doc.name }}"], ["Date", "{{ doc.posting_date }}"], ["Paid by", "{{ doc.mode_of_payment }}", "doc.mode_of_payment"], ["Cheque / reference", "{{ doc.reference_no }}", "doc.reference_no"]],
+  table: Table("references", [col("Document", "reference_name", "left", "40%"), col("Bill total", "total_amount", "right", "30%"), col("Paid now", "allocated_amount", "right", "30%")], { h: 60 }),
+  totals: [["Amount paid", "{{ doc.paid_amount }}", true]],
+  left: [T("Amount in words: {{ frappe.utils.money_in_words(doc.paid_amount, doc.paid_from_account_currency) }}", { h: 18, fontSize: 10, italic: true }), T("{{ doc.remarks }}", { h: 30, fontSize: 9, color: "#444444", showIf: "doc.remarks" })],
+  signatures: ["Prepared by", "Approved by", "Received by"],
+});
+
+const goodsReceived = () => tradeDocument({
+  title: "GOODS RECEIVED NOTE", accent: "#0e8a7d",
+  partyLabel: "Received from", partyLines: ["{{ doc.supplier_name }}", "{{ doc.address_display }}"],
+  meta: [["GRN no.", "{{ doc.name }}"], ["Date", "{{ doc.posting_date }}"], ["Supplier delivery note", "{{ doc.supplier_delivery_note }}", "doc.supplier_delivery_note"]],
+  table: Table("items", [col("No.", "idx", "left", "7%"), col("Item code", "item_code", "left", "20%"), col("Description", "item_name", "left", "35%"), col("Received", "received_qty", "right", "13%"), col("Rejected", "rejected_qty", "right", "13%"), col("Unit", "uom", "left", "12%")]),
+  left: [T("{{ doc.remarks }}", { h: 30, fontSize: 9, color: "#444444", showIf: "doc.remarks" })],
+  signatures: ["Received by", "Checked by", "Stores"],
+});
+
+// Laid out for a 203 x 89 mm cheque. Banks differ, so the positions are a starting point:
+// trace a scan of your own cheque (Page panel, Tracing image) and nudge each line onto it.
+const cheque = () => toTree([
+  T("{{ doc.posting_date }}", { h: 22, fontSize: 12, align: "right", padding: "0 20px 0 0" }),
+  T("{{ doc.party_name }}", { h: 30, fontSize: 13, fontWeight: "600", padding: "18px 0 0 70px" }),
+  T("{{ frappe.utils.money_in_words(doc.paid_amount, doc.paid_from_account_currency) }}", { h: 44, fontSize: 11, padding: "10px 190px 0 70px", lineHeight: 1.6 }),
+  T("{{ doc.paid_amount }}", { h: 24, fontSize: 14, fontWeight: "700", align: "right", padding: "0 24px 0 0" }),
+], { pageSize: "Custom", customW: 203, customH: 89, statusHeading: false }, 16);
+
+// A report format: Frappe fills it in the browser from the General Ledger report, run
+// for one customer. `doc` does not exist here; `filters` and the report's rows do.
+const customerStatement = () => {
+  const title = T("STATEMENT OF ACCOUNT", { h: 30, fontSize: 20, fontWeight: "700", lineHeight: 1.3 });
+  const who = T("{{ filters.party }}", { h: 22, fontSize: 13, fontWeight: "600" });
+  const span = T("{{ filters.from_date }} to {{ filters.to_date }}   ·   {{ filters.company }}", { h: 26, fontSize: 10, color: "#555555", padding: "0 0 10px 0" });
+  const rows = Table("", [col("Date", "posting_date", "left", "14%"), col("Type", "voucher_type", "left", "20%"), col("Voucher", "voucher_no", "left", "27%"), col("Debit", "debit", "right", "13%"), col("Credit", "credit", "right", "13%"), col("Balance", "balance", "right", "13%")], { h: 120, fontSize: 10, headerFontSize: 10 });
+  return toTree([title, who, span, rows], { printFor: "Report" });
+};
+
 export const DOC_TEMPLATES = [
   { id: "tax-invoice", label: "Tax invoice", doctype: "Sales Invoice", note: "A4, tax PINs, taxes and a QR code", build: taxInvoice },
   { id: "quotation", label: "Quotation", doctype: "Quotation", note: "A4 with validity and acceptance", build: quotation },
@@ -225,17 +295,27 @@ export const DOC_TEMPLATES = [
   { id: "pos-receipt", label: "Till receipt", doctype: "Sales Invoice", note: "80 mm receipt roll", build: posReceipt },
   { id: "item-label", label: "Item label", doctype: "Item", note: "50 x 25 mm sticker with barcode", build: itemLabel },
   { id: "delivery-labels", label: "Carton labels", doctype: "Delivery Note", note: "100 x 50 mm, one label per item", build: deliveryLabels },
+  { id: "credit-note", label: "Credit note", doctype: "Sales Invoice", note: "A4, for a sales return", build: creditNote },
+  { id: "proforma", label: "Proforma invoice", doctype: "Sales Order", note: "A4 with payment details", build: proforma },
+  { id: "packing-slip", label: "Packing slip", doctype: "Packing Slip", note: "A4 with package numbers and barcode", build: packingSlip },
+  { id: "payment-voucher", label: "Payment voucher", doctype: "Payment Entry", note: "A4 for money paid out, three signatures", build: paymentVoucher },
+  { id: "grn", label: "Goods received note", doctype: "Purchase Receipt", note: "A4 with received and rejected quantities", build: goodsReceived },
+  { id: "cheque", label: "Cheque", doctype: "Payment Entry", note: "203 x 89 mm, to adjust to your bank's cheque", build: cheque },
+  { id: "statement", label: "Customer statement", doctype: "General Ledger", report: true, note: "Report format for the General Ledger of one customer", build: customerStatement },
 ];
 
 // The same designs in the shape the template gallery lists (see TEMPLATES in tree.js)
-const GROUPS = { "Sales Invoice": "Selling", "Quotation": "Selling", "Purchase Order": "Buying", "Delivery Note": "Stock", "Item": "Stock", "Payment Entry": "Accounts", "Salary Slip": "Payroll" };
+const GROUPS = { "Sales Order": "Selling", "Packing Slip": "Stock", "Purchase Receipt": "Stock", "General Ledger": "Accounts", "Sales Invoice": "Selling", "Quotation": "Selling", "Purchase Order": "Buying", "Delivery Note": "Stock", "Item": "Stock", "Payment Entry": "Accounts", "Salary Slip": "Payroll" };
 export const GALLERY_TEMPLATES = DOC_TEMPLATES.map(t => ({
-  id: t.id, label: t.label, group: GROUPS[t.doctype] || "", doctype: t.doctype, desc: "For " + t.doctype + ". " + t.note + ".", build: t.build,
+  id: t.id, label: t.label, group: GROUPS[t.doctype] || "", doctype: t.doctype, desc: (t.report ? "For the " + t.doctype + " report. " : "For " + t.doctype + ". ") + t.note + ".", build: t.build, report: !!t.report,
   get docFields() { return fieldsFromTree(t.build()); },
 }));
 
 // The fields a design refers to, for the field list when no site is there to ask
 export function fieldsFromTree(tree) {
+  if (tree.settings?.printFor === "Report") {
+    return Object.values(tree.nodes || {}).filter(n => n.type === "table").flatMap(n => (n.columns || []).map(c => ({ name: c.field, label: c.label })));
+  }
   const seen = new Map();
   const add = (name, extra = {}) => { if (!seen.has(name)) seen.set(name, { name, label: name.replace(/_/g, " ").replace(/^./, c => c.toUpperCase()), ...extra }); };
   add("name", { label: "ID" });

@@ -1,12 +1,12 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
-import { getSettings, pageDims, paperLabel, getPathData, repeatRoots, pageContentHeight, marginMm, toPrintFormatHtml, toStandaloneHtml } from './exporter.js';
-import { snap, uid, treeUpd, treeAdd, treeRemove, migrateTree, treeMove, rmFromParent, findParent, isDesc, cloneTree, topLevel, copyNodes, pasteNodes, alignNodes, distributeNodes, mkT, mkPath, FACS, buildTree, buildReportTree, buildSampleInvoiceTree } from './tree.js';
+import { getSettings, pageDims, paperLabel, copyNames, customFont, toBlockHtml, getPathData, repeatRoots, pageContentHeight, marginMm, toPrintFormatHtml, toStandaloneHtml } from './exporter.js';
+import { snap, uid, treeUpd, treeAdd, treeRemove, migrateTree, treeMove, rmFromParent, findParent, isDesc, cloneTree, topLevel, copyNodes, pasteNodes, alignNodes, distributeNodes, groupNodes, ungroupNode, remapFields, replaceColours, applyBrand, mkShared, mkT, mkPath, FACS, buildTree, buildReportTree, buildSampleInvoiceTree } from './tree.js';
 import { injectStyles } from './styles.js';
 import { FRAPPE, frappeCall, frappePdf } from './frappe.js';
 import { SmartGuides } from './components/atoms.jsx';
 import { CNode, Ruler } from './components/Canvas.jsx';
 import { Breadcrumb, Props, LeftPanel } from './components/Panels.jsx';
-import { ErrorGuardian, NewDesignModal, DesignHistoryModal, PublishModal } from './components/Modals.jsx';
+import { ErrorGuardian, NewDesignModal, DesignHistoryModal, PublishModal, RemapModal } from './components/Modals.jsx';
 import { TemplateGallery, CommandPalette, ContextMenu, UndoSnackbar, Toast, Tips, EmptyState, StandalonePublishModal } from './components/Overlays.jsx';
 import { serializeDesign, loadDesignFile } from './schema.js';
 import { validateDesign } from './validate.js';
@@ -170,6 +170,9 @@ function MainApp() {
   // first printable value stands in
   const watermarkSample = settings.watermark === "status" ? "DRAFT" : settings.watermark === "text" ? settings.watermarkText
     : settings.watermark === "field" ? (((docFields.find(f => f.name === settings.watermarkField)?.options || []).find(o => !(settings.watermarkSkip || []).includes(o)) || settings.watermarkField || "").replace(/_/g, " ").toUpperCase()) : "";
+  const uploadedFont = settings.font === "custom" ? customFont(settings) : null;
+  const pageFont = uploadedFont ? '"' + uploadedFont.name + '"' : settings.font === "custom" ? "" : settings.font;
+  const firstCopy = isReport ? "" : copyNames(settings)[0] || "";
   const updateSettings = (ch, padding) => record({ ...tree, settings: { ...settings, ...ch }, ...(padding == null ? {} : { pages: tree.pages.map(pg => ({ ...pg, padding })) }) });
   useEffect(() => { injectStyles(theme, pg, density); }, [theme, pg.w, pg.h, density]);
 
@@ -431,6 +434,104 @@ function MainApp() {
   const alignSel = useCallback(how => record(alignNodes(tree, [sel, ...multi], how)), [tree, sel, multi, record]);
   const distributeSel = useCallback(axis => record(distributeNodes(tree, [sel, ...multi], axis)), [tree, sel, multi, record]);
 
+  const groupSel = useCallback(() => {
+    const [t, gid] = groupNodes(tree, [sel, ...multi].filter(Boolean));
+    if (!gid) { setToast({ type: "error", title: "These cannot be grouped", body: "Pick elements that sit side by side in the same container." }); return; }
+    record(t);
+    setSel(gid);
+  }, [tree, sel, multi, record, setSel]);
+  const ungroupSel = useCallback(id => {
+    const [t, kids] = ungroupNode(tree, id);
+    if (!kids.length) return;
+    record(t);
+    setSelRaw(kids[0]);
+    setMulti(kids.slice(1));
+  }, [tree, record]);
+
+  // Blocks saved for reuse: on the site for everyone, or in this browser when standalone
+  const [blocks, setBlocks] = useState([]);
+  const localBlocks = () => { try { return JSON.parse(localStorage.getItem("pf_blocks") || "[]"); } catch (e) { return []; } };
+  const loadBlocks = useCallback(() => {
+    if (FRAPPE) frappeCall("list_blocks").then(l => setBlocks((l || []).map(b => ({ name: b.name, linked: !!b.linked, height: b.height }))), () => { });
+    else setBlocks(localBlocks().map(b => ({ name: b.name })));
+  }, []);
+  useEffect(() => { loadBlocks(); }, [loadBlocks]);
+  const saveBlock = async (name, linked) => {
+    const clip = copyNodes(tree, [sel, ...multi].filter(Boolean));
+    if (!clip.roots.length) return;
+    // What the block takes up on the page, so a linked copy can reserve the same room
+    const height = clip.roots.reduce((a, id) => a + (document.querySelector('[data-pf-node="' + id + '"]')?.offsetHeight || 0), 0);
+    try {
+      if (FRAPPE) await frappeCall("save_block", { block: name, design: JSON.stringify(clip), html: toBlockHtml(clip), height, linked: linked ? 1 : 0 });
+      else if (!store("pf_blocks", [...localBlocks().filter(b => b.name !== name), { name, design: clip }])) throw new Error("Browser storage is full.");
+      loadBlocks();
+      setToast({ type: "success", title: "Block saved", body: name + " is under Your blocks in the Insert panel." });
+    } catch (e) {
+      setToast({ type: "error", title: "Could not save the block", body: e.message });
+    }
+  };
+  const insertBlock = async (b, linked) => {
+    try {
+      if (linked) {
+        const el = { ...mkShared(), block: b.name, h: b.height || 60 };
+        record(treeAdd(tree, el, null, activePageIdx));
+        setSel(el.id);
+        return;
+      }
+      const clip = FRAPPE ? JSON.parse((await frappeCall("get_block", { block: b.name })).design) : localBlocks().find(x => x.name === b.name)?.design;
+      const holder = sel && ["container", "rect", "circle", "triangle"].includes(tree.nodes[sel]?.type);
+      const [next, added] = pasteNodes(tree, clip, holder ? sel : null, activePageIdx);
+      if (!added.length) return;
+      record(next);
+      setSelRaw(added[0]);
+      setMulti(added.slice(1));
+    } catch (e) {
+      setToast({ type: "error", title: "Could not insert " + b.name, body: e.message });
+    }
+  };
+  const deleteBlock = async (b) => {
+    if (!window.confirm('Delete the block "' + b.name + '"?' + (b.linked ? " Formats that print it linked will print nothing in its place." : ""))) return;
+    try {
+      if (FRAPPE) await frappeCall("delete_block", { block: b.name });
+      else store("pf_blocks", localBlocks().filter(x => x.name !== b.name));
+      loadBlocks();
+    } catch (e) {
+      setToast({ type: "error", title: "Could not delete " + b.name, body: e.message });
+    }
+  };
+
+  // Brand colour: kept on the site for everyone, or in this browser when standalone
+  const [brand, setBrandState] = useState(() => { try { return localStorage.getItem("pf_brand") || ""; } catch (e) { return ""; } });
+  useEffect(() => { if (FRAPPE) frappeCall("get_brand").then(c => { if (c) setBrandState(c); }, () => { }); }, []);
+  const brandTimer = useRef(null);
+  const setBrand = (c) => {
+    setBrandState(c);
+    remember("pf_brand", c);
+    // A colour picker reports every step of a drag; only the colour it settles on is sent
+    clearTimeout(brandTimer.current);
+    if (FRAPPE) brandTimer.current = setTimeout(() => { frappeCall("save_brand", { colour: c }).catch(() => { }); }, 700);
+  };
+  const [showRemap, setShowRemap] = useState(false);
+  const tools = {
+    blocks, onSaveBlock: saveBlock, onInsertBlock: insertBlock, onDeleteBlock: deleteBlock,
+    onGroup: multi.length ? groupSel : null, onUngroup: ungroupSel,
+    brand, setBrand,
+    onApplyBrand: c => { const t = applyBrand(tree, c); if (t !== tree) record(t); },
+    onReplaceColour: (from, to) => record(replaceColours(tree, { [from]: to })),
+    onUploadFont: FRAPPE ? async (filename, data) => (await frappeCall("upload_font", { filename, data })).url : null,
+    onRemap: getSettings(tree).printFor === "Report" ? null : () => setShowRemap(true),
+  };
+  const applyRemap = (dt, fields, map) => {
+    record(remapFields(tree, map));
+    setDoctype(dt);
+    setDocFields(fields);
+    setPrintFormat("");
+    setSiteModified("");
+    setDesignId(uid());
+    setShowRemap(false);
+    setToast({ type: "success", title: "Now a " + dt + " design", body: "Publish it under a new name. The original format is untouched." });
+  };
+
   const zOrder = useCallback((id, dir) => {
     const pid = findParent(tree, id);
     if (pid) {
@@ -485,6 +586,11 @@ function MainApp() {
       if (!sel) return;
       const el = tree.nodes[sel]; if (!el) return;
       const ids = [sel, ...multi];
+      if (editing && isMod && e.key.toLowerCase() === "g") {
+        e.preventDefault();
+        if (e.shiftKey) ungroupSel(sel); else if (multi.length) groupSel();
+        return;
+      }
       if (editing && isMod && e.key.toLowerCase() === "c") { copySel(ids); return; }
       if (editing && isMod && e.key.toLowerCase() === "x") { copySel(ids); deleteMany(ids); e.preventDefault(); return; }
       const s = e.shiftKey ? 8 : 1;
@@ -556,7 +662,7 @@ function MainApp() {
       window.removeEventListener("mousemove", mv);
       window.removeEventListener("mouseup", mu);
     };
-  }, [sel, multi, tree, deleteMany, updateEl, dupMany, copySel, pasteClip, record, setSel, undo, redo, penMode, editPointIdx, editHandle, selPointIdx, zoom, preview, showCode]);
+  }, [sel, multi, tree, deleteMany, updateEl, dupMany, copySel, pasteClip, groupSel, ungroupSel, record, setSel, undo, redo, penMode, editPointIdx, editHandle, selPointIdx, zoom, preview, showCode]);
 
   const copy = () => { navigator.clipboard.writeText(jinja); setCopied(true); setTimeout(() => setCopied(false), 2200); };
 
@@ -616,7 +722,7 @@ function MainApp() {
     setDoctype(t.doctype);
     setDocFields(t.docFields);
     // The site knows the doctype's full field list, including what its link fields point at
-    if (FRAPPE) frappeCall("get_doctype_fields", { doctype: t.doctype }).then(f => { if (f?.length) setDocFields(f); }, () => { });
+    if (FRAPPE && !t.report) frappeCall("get_doctype_fields", { doctype: t.doctype }).then(f => { if (f?.length) setDocFields(f); }, () => { });
     setSel(null);
     setActivePageIdx(0);
     setPrintFormat("");
@@ -632,7 +738,7 @@ function MainApp() {
       dt = template.doctype;
       fs = fieldsFromTree(templateTree);
       // The site knows the doctype's full field list; without one, the fields the design uses
-      if (FRAPPE) frappeCall("get_doctype_fields", { doctype: dt }).then(f => { if (f?.length) setDocFields(f); }, () => { });
+      if (FRAPPE && !template.report) frappeCall("get_doctype_fields", { doctype: dt }).then(f => { if (f?.length) setDocFields(f); }, () => { });
     }
     setDoctype(dt);
     setDocFields(fs);
@@ -928,7 +1034,7 @@ function MainApp() {
       </div>
       <Breadcrumb tree={tree} selected={sel} onSelect={setSel} />
       <div style={{ display: "flex", flex: 1, overflow: "hidden" }}>
-        {!preview && !showCode && <LeftPanel assets={assets} setAssets={setAssets} onAdd={addEl} onSetTrace={(src) => {
+        {!preview && !showCode && <LeftPanel tools={tools} assets={assets} setAssets={setAssets} onAdd={addEl} onSetTrace={(src) => {
           updatePage(activePageIdx, { backgroundImg: src, bgOpacity: 0.3 });
           setSel(null); // Show page props
         }} onAddTemplate={(fn) => {
@@ -1039,7 +1145,7 @@ function MainApp() {
                         ref={pidx === 0 ? printRef : null}
                         className="pf-print-area"
                         onMouseDown={() => setActivePageIdx(pidx)}
-                        style={{ position: "relative", width: pg.w, minHeight: pg.h, ...(settings.font ? { fontFamily: settings.font } : {}), background: "#ffffff", boxShadow: isPrinting ? "none" : "0 0 0 1px rgba(0,0,0,.1),0 2px 8px rgba(0,0,0,.12)", padding: page.padding ?? 40, display: "flex", flexDirection: "column", outline: !preview && !showCode && activePageIdx === pidx ? "1px solid var(--ac)" : "none" }}
+                        style={{ position: "relative", width: pg.w, minHeight: pg.h, ...(pageFont ? { fontFamily: pageFont } : {}), background: "#ffffff", boxShadow: isPrinting ? "none" : "0 0 0 1px rgba(0,0,0,.1),0 2px 8px rgba(0,0,0,.12)", padding: page.padding ?? 40, display: "flex", flexDirection: "column", outline: !preview && !showCode && activePageIdx === pidx ? "1px solid var(--ac)" : "none" }}
                         onClick={e => { if (e.target === e.currentTarget && !pressedOnNode.current) setSel(null); }}
                         onContextMenu={e => { if (preview || showCode) return; e.preventDefault(); openContextMenu(e, null); }}>
                         {!preview && !showCode && !isPrinting && showGrid && (
@@ -1050,6 +1156,8 @@ function MainApp() {
                             {Array.from({ length: 12 }, (_, k) => <div key={k} title="Roughly where a printed page ends" style={{ position: "absolute", left: 0, right: 0, top: (page.padding ?? 40) + (k + 1) * contentH, borderTop: "1px dashed rgba(217,72,77,.6)" }} />)}
                           </div>
                         )}
+                        {uploadedFont && <style>{'@font-face{font-family:"' + uploadedFont.name + '";src:url(' + uploadedFont.url + ')}'}</style>}
+                        {firstCopy && <div style={{ position: "absolute", top: Math.max(2, (page.padding ?? 40) - 16), right: page.padding ?? 40, fontSize: 10, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase", color: "#333333", pointerEvents: "none" }}>{firstCopy}</div>}
                         {!isReport && watermarkSample && (
                           <div style={{ position: "absolute", top: Math.round(pg.h * 0.3), left: 0, width: "100%", textAlign: "center", lineHeight: 1, fontSize: Math.max(18, Math.round(pg.w / 8)), fontWeight: 700, letterSpacing: Math.round(Math.max(18, Math.round(pg.w / 8)) / 12), color: "rgba(0,0,0,.09)", transform: "rotate(-30deg)", pointerEvents: "none", whiteSpace: "nowrap" }}>{watermarkSample}</div>
                         )}
@@ -1077,6 +1185,7 @@ function MainApp() {
 
         {!showCode && !preview && <div style={{ width: 258, background: "var(--b1)", borderLeft: "1px solid var(--bd)", overflowY: "auto", flexShrink: 0 }}>
           <Props
+            tools={tools}
             tree={tree} selected={sel} multi={multi} onAlign={alignSel} onDistribute={distributeSel} onDeleteMany={() => deleteMany([sel, ...multi])} onDupMany={() => dupMany([sel, ...multi])} onCopy={() => copySel([sel, ...multi])}
             docFields={docFields} onUpdate={updateEl} onDelete={deleteEl} onDup={dupEl} onZOrder={zOrder} onAddChild={addChild}
             showRulers={showRulers} setShowRulers={setShowRulers} showGrid={showGrid} setShowGrid={setShowGrid} gridSize={gridSize} setGridSize={setGridSize}
@@ -1099,6 +1208,7 @@ function MainApp() {
       {snackbar && <UndoSnackbar message={snackbar.message} onUndo={() => { undo(); setSnackbar(null); }} onDismiss={() => setSnackbar(null)} />}
       {toast && <Toast toast={toast} onDismiss={() => setToast(null)} />}
       {!seenTips && !showNewModal && !showGallery && <Tips onDismiss={() => { setSeenTips(true); remember("pf_tips", "seen"); }} />}
+      {showRemap && <RemapModal doctype={doctype} tree={tree} onCancel={() => setShowRemap(false)} onApply={applyRemap} />}
       {showNewModal && <NewDesignModal onCancel={() => setShowNewModal(false)} onCreate={handleCreateNew} />}
       {showHistoryModal && <DesignHistoryModal onCancel={() => setShowHistoryModal(false)} onLoad={loadDesign} onDelete={deleteSaved} onLoadSite={loadSiteDesign} />}
       {showPublish && FRAPPE && <PublishModal doctype={doctype} isReport={isReport} initialName={printFormat} onCancel={() => setShowPublish(false)} onPublish={publish} validate={name => validateDesign(tree, doctype, docFields, jinja, name)} />}

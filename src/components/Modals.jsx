@@ -1,7 +1,7 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { FRAPPE, frappeCall } from '../frappe.js';
 import { PRESET_DOCTYPES } from '../doctypes.js';
-import { DOC_TEMPLATES } from '../templates.js';
+import { DOC_TEMPLATES, fieldsFromTree } from '../templates.js';
 import { IssueList } from './Overlays.jsx';
 import { Txt, Sec } from './atoms.jsx';
 
@@ -313,6 +313,86 @@ export function PublishModal({ doctype, isReport, initialName, onCancel, onPubli
           <button onClick={onCancel} style={{ padding: "7px 14px", background: "transparent", border: "1px solid var(--bm)", color: "var(--t1)", borderRadius: "var(--r4)", fontSize: 12, cursor: "pointer" }}>{done ? "Close" : "Cancel"}</button>
           {!done && state?.conflict && <button onClick={() => submit(true)} style={{ padding: "7px 14px", background: "transparent", border: "1px solid var(--rd)", color: "var(--rd)", borderRadius: "var(--r4)", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>Replace it</button>}
           {!done && !state?.conflict && <button onClick={() => submit(false)} disabled={state === "busy" || !name.trim() || blocked} title={blocked ? "Fix the problems listed first" : ""} style={{ padding: "7px 14px", background: "var(--ac)", border: "1px solid var(--ac)", color: "#fff", borderRadius: "var(--r4)", fontSize: 12, fontWeight: 600, cursor: "pointer", opacity: state === "busy" || !name.trim() || blocked ? .6 : 1 }}>{state === "busy" ? "Publishing" : "Publish"}</button>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Use a design for another doctype ──────────────────────────────────────────
+// Fields that usually mean the same thing under different names
+const SAME_THING = [
+  ["posting_date", "transaction_date"],
+  ["customer_name", "supplier_name", "party_name", "title"],
+  ["customer", "supplier", "party", "party_name"],
+  ["due_date", "valid_till", "schedule_date", "delivery_date"],
+  ["address_display", "shipping_address", "billing_address_display", "shipping_address_display"],
+];
+const guess = (name, fields) => {
+  for (const group of SAME_THING) if (group.includes(name)) { const hit = group.find(g => g !== name && fields.some(f => f.name === g)); if (hit) return hit; }
+  return "";
+};
+
+export function RemapModal({ doctype, tree, onCancel, onApply }) {
+  const used = useMemo(() => fieldsFromTree(tree).filter(f => f.name !== "name"), [tree]);
+  const [target, setTarget] = useState("");
+  const [fields, setFields] = useState(null);
+  const [msg, setMsg] = useState("");
+  const [map, setMap] = useState({});
+  const [siteDoctypes, setSiteDoctypes] = useState([]);
+  useEffect(() => { if (FRAPPE) frappeCall("list_doctypes").then(l => setSiteDoctypes(l || []), () => { }); }, []);
+  const presets = Object.values(PRESET_DOCTYPES).flat();
+  const load = async () => {
+    const dt = target.trim();
+    if (!dt) return;
+    setMsg("Loading");
+    try {
+      const f = FRAPPE ? await frappeCall("get_doctype_fields", { doctype: dt }) : (presets.find(x => x.label.toLowerCase() === dt.toLowerCase())?.fields || null);
+      if (!f) throw new Error("No field list for " + dt + ". Pick one of the listed document types.");
+      const list = [{ name: "name", label: "ID" }, ...f.filter(x => x.name !== "name")];
+      setFields(list);
+      setMap(Object.fromEntries(used.filter(u => !list.some(x => x.name === u.name)).map(u => [u.name, guess(u.name, list)])));
+      setMsg("");
+    } catch (e) {
+      setFields(null);
+      setMsg(e.message);
+    }
+  };
+  const missing = fields ? used.filter(u => !fields.some(x => x.name === u.name)) : [];
+  const unmapped = missing.filter(u => !map[u.name]).length;
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.5)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000, padding: 20 }}>
+      <div style={{ width: "100%", maxWidth: 520, background: "var(--b1)", border: "1px solid var(--bd)", borderRadius: "var(--r6)", overflow: "hidden", display: "flex", flexDirection: "column", maxHeight: "90vh", boxShadow: "0 8px 24px rgba(0,0,0,.25)" }}>
+        <div style={{ padding: "12px 20px", borderBottom: "1px solid var(--bd)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <h2 style={{ fontSize: 14, fontWeight: 600, color: "var(--t0)" }}>Use this design for another doctype</h2>
+          <button onClick={onCancel} className="ib">×</button>
+        </div>
+        <div style={{ padding: 20, overflowY: "auto", flex: 1 }}>
+          <p style={{ fontSize: 11, color: "var(--t2)", lineHeight: 1.5, marginBottom: 10 }}>The layout stays; the fields it reads are pointed at the new document type. This design is for {doctype}.</p>
+          <div style={{ display: "flex", gap: 6 }}>
+            <input className="pi" list="pf-remap-doctypes" value={target} onChange={e => setTarget(e.target.value)} onKeyDown={e => { if (e.key === "Enter") load(); }} placeholder="e.g. Quotation" style={{ fontSize: 12 }} />
+            <datalist id="pf-remap-doctypes">{(FRAPPE ? siteDoctypes : presets.map(x => x.label)).map(n => <option key={n} value={n} />)}</datalist>
+            <button className="bcb" onClick={load} disabled={!target.trim()}>Compare fields</button>
+          </div>
+          {msg && <p style={{ fontSize: 11, color: msg === "Loading" ? "var(--t2)" : "var(--rd)", marginTop: 6 }}>{msg}</p>}
+          {fields && <>
+            <p style={{ fontSize: 11, color: "var(--t1)", margin: "12px 0 8px" }}>{used.length - missing.length} of the {used.length} fields this design reads exist on {target.trim()} under the same name.{missing.length ? " Choose what the others should read instead:" : ""}</p>
+            {missing.map(u => (
+              <div key={u.name} style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+                <span className="mono" style={{ flex: 1, fontSize: 11, color: "var(--ac)", overflow: "hidden", textOverflow: "ellipsis" }}>{u.name}{u.isChild ? " (table)" : ""}</span>
+                <span style={{ color: "var(--t2)", fontSize: 11 }}>→</span>
+                <select className="ps" style={{ flex: 1.3 }} value={map[u.name] || ""} onChange={e => setMap({ ...map, [u.name]: e.target.value })}>
+                  <option value="">Leave as it is (prints empty)</option>
+                  {fields.filter(f => !!f.isChild === !!u.isChild).map(f => <option key={f.name} value={f.name}>{(f.label || f.name) + " · " + f.name}</option>)}
+                </select>
+              </div>
+            ))}
+            {unmapped > 0 && <p style={{ fontSize: 10, color: "var(--t2)", marginTop: 6 }}>{unmapped} left as {unmapped === 1 ? "it is" : "they are"}: {unmapped === 1 ? "it" : "they"} will print empty until changed on the page.</p>}
+          </>}
+        </div>
+        <div style={{ padding: "12px 20px", borderTop: "1px solid var(--bd)", display: "flex", justifyContent: "flex-end", gap: 8 }}>
+          <button onClick={onCancel} style={{ padding: "7px 14px", background: "transparent", border: "1px solid var(--bm)", color: "var(--t1)", borderRadius: "var(--r4)", fontSize: 12, cursor: "pointer" }}>Cancel</button>
+          <button disabled={!fields} onClick={() => onApply(target.trim(), fields, map)} style={{ padding: "7px 14px", background: "var(--ac)", border: "1px solid var(--ac)", color: "#fff", borderRadius: "var(--r4)", fontSize: 12, fontWeight: 600, cursor: "pointer", opacity: fields ? 1 : .6 }}>Switch to {target.trim() || "it"}</button>
         </div>
       </div>
     </div>

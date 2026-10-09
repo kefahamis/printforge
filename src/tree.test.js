@@ -137,7 +137,7 @@ describe('ready-made designs', () => {
       const t = migrateTree(tpl.build())
       wellFormed(t)
       expect(toPrintFormatHtml(t), tpl.id).not.toContain('Error generating')
-      expect(fieldsFromTree(t).some(f => f.name === "name")).toBe(true)
+      expect(fieldsFromTree(t).some(f => f.name === (tpl.report ? "posting_date" : "name")), tpl.id).toBe(true)
     }
   })
   it('blocks come as an element followed by what is inside it', () => {

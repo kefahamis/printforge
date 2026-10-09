@@ -24,7 +24,7 @@ after_install = "printforge.install.after_install"
 after_migrate = ["printforge.install.after_migrate"]
 
 # QR codes and barcodes in published formats are drawn by these when a document is printed.
-jinja = {"methods": ["printforge.jinja.printforge_qr", "printforge.jinja.printforge_barcode"]}
+jinja = {"methods": ["printforge.jinja.printforge_qr", "printforge.jinja.printforge_barcode", "printforge.jinja.printforge_block"]}
 
 # Earlier versions are kept per format, so they go when the format does.
 doc_events = {"Print Format": {"on_trash": "printforge.api.delete_versions"}}

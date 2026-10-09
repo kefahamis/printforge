@@ -15,7 +15,7 @@ export const CUSTOM_PAPERS = [
   { label: "Label 100 x 50 mm", w: 100, h: 50, margin: 8 },
   { label: "Label 50 x 25 mm", w: 50, h: 25, margin: 4 },
 ];
-export const DEFAULT_SETTINGS = { pageSize: "A4", orientation: "Portrait", letterHead: false, pageNumbers: false, statusHeading: true, font: "", printFor: "DocType", customW: 80, customH: 200, watermark: "", watermarkText: "", watermarkField: "status", watermarkSkip: [] };
+export const DEFAULT_SETTINGS = { pageSize: "A4", orientation: "Portrait", letterHead: false, pageNumbers: false, statusHeading: true, font: "", printFor: "DocType", customW: 80, customH: 200, watermark: "", watermarkText: "", watermarkField: "status", watermarkSkip: [], copies: "", customFont: null };
 const mmToPx = mm => Math.round(mm * 96 / 25.4);
 const customMm = s => {
   const w = Math.max(10, Number(s.customW) || 80), h = Math.max(10, Number(s.customH) || 200);
@@ -86,7 +86,7 @@ const fixedSpacer = w => `<td class="pf-c" style="width:${w}px;"></td>`;
 // An element with a "show only if" condition is wrapped in a template test. The syntax is
 // shared by Jinja and by the browser templates Frappe uses for reports.
 function renderNode(tree, id, indent, extraStyle = "", inFlow = false, report = false) {
-  const el = tree.nodes[id]; if (!el) return "";
+  const el = tree.nodes[id]; if (!el || el.hidden) return "";
   const html = renderElement(tree, id, indent, extraStyle, inFlow, report);
   const cond = (el.showIf || "").replace(/\{\{|\}\}|\{%|%\}/g, "").trim();
   const p = "  ".repeat(indent);
@@ -97,6 +97,43 @@ function renderNode(tree, id, indent, extraStyle = "", inFlow = false, report = 
   const gap = el.breakAfter ? `\n${p}{% if not loop.last %}<div style="page-break-after:always;"></div>{% endif %}` : "";
   return `${p}{% for item in doc.${each} %}\n${shown}${gap}\n${p}{% endfor %}`;
 }
+
+const bare = v => String(v || "").replace(/\{\{|\}\}|\{%|%\}/g, "").trim();
+const fieldName = v => String(v || "").replace(/[^A-Za-z0-9_]/g, "");
+
+// Copies printed one after another, each named on its pages: "Original, Duplicate"
+export const copyNames = s => String(s.copies || "").split(",").map(c => c.trim()).filter(Boolean).slice(0, 6);
+
+// A font uploaded for this design: { name, url }. Anything that could break out of the
+// @font-face rule is refused.
+export const customFont = s => {
+  const f = s.customFont;
+  if (!f || !f.url || !/^(\/files\/|\/private\/files\/|data:font\/|data:application\/|https?:\/\/)/.test(f.url) || /["'()\s<>]/.test(f.url)) return null;
+  return { name: "PF " + (String(f.name || "Font").replace(/[^A-Za-z0-9 _-]/g, "").trim() || "Font"), url: f.url };
+};
+
+// Extra inline CSS that applies only while a condition holds, e.g. red when overdue.
+// The later declaration wins, so it is appended after the element's own style.
+const ruleCss = el => (el.rules || []).map(r => {
+  const when = bare(r.when);
+  const css = (r.color ? "color:" + r.color + ";" : "") + (r.bg ? "background:" + r.bg + ";" : "") + (r.bold ? "font-weight:700;" : "");
+  return when && css ? "{% if " + when + " %}" + css + "{% endif %}" : "";
+}).join("");
+
+// A second-language wording printed after the first: "Total / Jumla"
+const second = text => (text || "").trim() ? ' / ' + String(text).trim().replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;") : "";
+
+// What one table cell prints, by the kind of column
+const tableCell = c => {
+  const f = fieldName(c.field) || "field";
+  if (c.kind === "image") return '{% if item.' + f + ' %}<img src="{{ item.' + f + ' }}" style="max-height:' + (Number(c.size) || 40) + 'px;max-width:100%;display:inline-block;" />{% endif %}';
+  if (c.kind === "barcode") return '{{ printforge_barcode(item.' + f + ', "code128", ' + (Number(c.codeW) || 120) + ', ' + (Number(c.size) || 36) + ', 1) }}';
+  if (c.kind === "calc") {
+    const e = bare(c.expr) || "0";
+    return c.money === false ? '{{ ' + e + ' }}' : '{{ frappe.utils.fmt_money(' + e + ', currency=doc.currency) }}';
+  }
+  return formatRefs('{{ item.' + f + ' }}', "item");
+};
 
 // The field a "value of a field" watermark reads; only a plain field name is accepted
 export const watermarkField = s => String(s.watermarkField || "").replace(/[^A-Za-z0-9_]/g, "");
@@ -182,7 +219,7 @@ function renderElement(tree, id, indent, extraStyle = "", inFlow = false, report
     }).join("\n");
   }
 
-  if (el.type === "text") return p + '<div style="' + base + 'min-height:' + el.h + 'px;' + (el.isRich ? '' : 'font-size:' + el.fontSize + 'px;font-weight:' + el.fontWeight + ';color:' + el.color + ';text-align:' + el.align + ';font-style:' + (el.italic ? "italic" : "normal") + ';line-height:' + el.lineHeight + ';white-space:pre-wrap;word-wrap:break-word;') + 'background:' + el.bg + ';padding:' + cssLen(el.padding) + ';border-radius:' + el.borderRadius + 'px;">' + (el.isRich ? (el.content || "") : translatable(el.content) ? tr(el.content, report) : report ? (el.content || "") : formatAllRefs(el.content)) + '</div>';
+  if (el.type === "text") return p + '<div style="' + base + 'min-height:' + el.h + 'px;' + (el.isRich ? '' : 'font-size:' + el.fontSize + 'px;font-weight:' + el.fontWeight + ';color:' + el.color + ';text-align:' + el.align + ';font-style:' + (el.italic ? "italic" : "normal") + ';line-height:' + el.lineHeight + ';white-space:pre-wrap;word-wrap:break-word;') + 'background:' + el.bg + ';padding:' + cssLen(el.padding) + ';border-radius:' + el.borderRadius + 'px;' + ruleCss(el) + '">' + (el.isRich ? (el.content || "") : translatable(el.content) ? tr(el.content, report) : report ? (el.content || "") : formatAllRefs(el.content)) + (el.isRich ? "" : second(el.content2)) + '</div>';
 
   if (el.type === "rect") {
     const border = (el.strokeWidth || 0) + 'px ' + (el.style || "solid") + ' ' + (el.stroke || "transparent");
@@ -217,6 +254,13 @@ function renderElement(tree, id, indent, extraStyle = "", inFlow = false, report
     return p + '{%if ' + (expr || "True") + '%}\n' + p + '<img src="' + (el.jinjaExpr || "") + '" style="' + base + 'height:' + el.h + 'px;object-fit:' + fit + ';" />\n' + p + '{%endif%}';
   }
 
+  if (el.type === "shared") {
+    // Kept on the site and rendered when the document is printed, so every format that
+    // uses the block follows it when it changes
+    if (report || !el.block) return p + "<!-- shared block skipped -->";
+    return p + `<div style="${base}">{{ printforge_block(${JSON.stringify(String(el.block))}, doc) }}</div>`;
+  }
+
   if (el.type === "qr" || el.type === "barcode") {
     // Drawn on the server by the app's own template functions (printforge/jinja.py)
     if (report) return p + "<!-- " + el.type + " skipped: report formats are filled in the browser, which cannot draw it -->";
@@ -229,9 +273,9 @@ function renderElement(tree, id, indent, extraStyle = "", inFlow = false, report
 
   if (el.type === "table") {
     const cols = (el.columns || []).filter(Boolean);
-    const ths = cols.map(c => '<th style="width:' + (c.width || "auto") + ';text-align:' + (c.align || "left") + ';padding:7px 10px !important;font-size:' + (el.headerFontSize || 11) + 'px;font-weight:600;color:' + (el.headerColor || "inherit") + ';">' + tr(c.label, report) + '</th>').join("");
+    const ths = cols.map(c => '<th style="width:' + (c.width || "auto") + ';text-align:' + (c.align || "left") + ';padding:7px 10px !important;font-size:' + (el.headerFontSize || 11) + 'px;font-weight:600;color:' + (el.headerColor || "inherit") + ';">' + tr(c.label, report) + second(c.label2) + '</th>').join("");
     const tdSt = 'padding:6px 10px !important;font-size:' + (el.fontSize || 12) + 'px;color:' + (el.rowColor || "inherit") + ';border-bottom:1px solid ' + (el.borderColor || "transparent") + ';';
-    const tds = cols.map(c => '<td style="text-align:' + (c.align || "left") + ';' + tdSt + '">' + formatRefs('{{ item.' + (c.field || "field") + ' }}', "item") + '</td>').join("");
+    const tds = cols.map(c => '<td style="text-align:' + (c.align || "left") + ';' + tdSt + '">' + tableCell(c) + '</td>').join("");
     const rowBg = el.rowBg || "transparent", rowAltBg = el.rowAltBg || rowBg;
     const rowBgSt = rowAltBg === rowBg ? rowBg : "{{ '" + rowBg + "' if loop.index0 % 2 == 0 else '" + rowAltBg + "' }}";
     const footSt = 'padding:6px 10px !important;font-size:' + (el.fontSize || 12) + 'px;color:' + (el.rowColor || "inherit") + ';font-weight:600;';
@@ -247,7 +291,22 @@ function renderElement(tree, id, indent, extraStyle = "", inFlow = false, report
         p + '<tr>' + (cols.length > 1 ? '<td colspan="' + (cols.length - 1) + '" style="text-align:right;' + footSt + '">' + tr(fr.label, report) + '</td>' : "") + '<td style="text-align:right;' + footSt + '">{{ ' + (fr.expr || "").trim() + ' }}</td></tr>\n').join("");
       return p + '<table style="' + tblSt + '">\n' + p + '<thead><tr style="background:' + (el.headerBg || "transparent") + ';color:' + (el.headerColor || "inherit") + ';">' + ths + '</tr></thead>\n' + p + '<tbody>\n' + p + '{% for row in data %}\n' + p + '<tr style="page-break-inside:avoid;background:' + rbg + ';' + '{% if row.is_total_row || row.bold %}font-weight:bold;{% endif %}">' + rtds + '</tr>\n' + p + '{% endfor %}\n' + rfoot + p + '</tbody>\n' + p + '</table>';
     }
-    return p + '<table style="' + tblSt + '">\n' + p + '<thead><tr style="background:' + (el.headerBg || "transparent") + ';color:' + (el.headerColor || "inherit") + ';">' + ths + '</tr></thead>\n' + p + '<tbody>\n' + p + '{%for item in doc.' + (el.childField || "items") + '%}\n' + p + '<tr style="page-break-inside:avoid;background:' + rowBgSt + ';">' + tds + '</tr>\n' + p + '{%endfor%}\n' + foot + p + '</tbody>\n' + p + '</table>';
+    // Rows: optionally only those that pass a test, and optionally under a heading per
+    // group with a subtotal after each
+    const rowIf = bare(el.rowIf);
+    const rowHtml = p + (rowIf ? '{% if ' + rowIf + ' %}' : '') + '<tr style="page-break-inside:avoid;background:' + rowBgSt + ';">' + tds + '</tr>' + (rowIf ? '{% endif %}' : '') + '\n';
+    const child = 'doc.' + (fieldName(el.childField) || "items");
+    const groupBy = fieldName(el.groupBy), groupTotal = fieldName(el.groupTotal);
+    let body;
+    if (groupBy) {
+      const span = Math.max(1, cols.length);
+      const headSt = 'padding:6px 10px !important;font-size:' + (el.fontSize || 12) + 'px;font-weight:700;color:' + (el.rowColor || "inherit") + ';background:' + (el.headerBg || "transparent") + ';';
+      const sub = groupTotal ? p + '<tr style="page-break-inside:avoid;">' + (span > 1 ? '<td colspan="' + (span - 1) + '" style="text-align:right;' + footSt + '">' + tr("Subtotal", report) + '</td>' : "") + '<td style="text-align:right;' + footSt + '">{{ frappe.utils.fmt_money(pf_g.list | sum(attribute="' + groupTotal + '"), currency=doc.currency) }}</td></tr>\n' : "";
+      body = p + '{% for pf_g in ' + child + ' | groupby("' + groupBy + '") %}\n' + p + '<tr style="page-break-inside:avoid;"><td colspan="' + span + '" style="' + headSt + '">{{ pf_g.grouper or "" }}</td></tr>\n' + p + '{% for item in pf_g.list %}\n' + rowHtml + p + '{% endfor %}\n' + sub + p + '{% endfor %}\n';
+    } else {
+      body = p + '{% for item in ' + child + ' %}\n' + rowHtml + p + '{% endfor %}\n';
+    }
+    return p + '<table style="' + tblSt + '">\n' + p + '<thead><tr style="background:' + (el.headerBg || "transparent") + ';color:' + (el.headerColor || "inherit") + ';">' + ths + '</tr></thead>\n' + p + '<tbody>\n' + body + foot + p + '</tbody>\n' + p + '</table>';
   }
 
   if (el.type === "container") {
@@ -332,12 +391,16 @@ export function toPrintFormatHtml(tree, opts = {}) {
       watermark = wmLayer(tr(s.watermarkText.trim()));
     }
 
-    const css = `
+    const cf = s.font === "custom" ? customFont(s) : null;
+    const font = cf ? '"' + cf.name + '", ' + DOC_FONT : s.font === "custom" ? "" : s.font;
+    const css = `${cf ? `
+  @font-face { font-family: "${cf.name}"; src: url(${cf.url}); }` : ""}
   .print-format { ${pdfRule}; }
   @media screen { .print-format { margin: 0 auto !important; padding: ${pad}px !important; max-width: ${w}px !important; } }
   @media print { .print-format { margin: 0 !important; padding: 0 !important; } }
   .pf-doc, .pf-doc * { box-sizing: border-box; }
-  .pf-doc { color: #111111; -webkit-print-color-adjust: exact;${s.font ? " font-family: " + s.font + ";" : ""} }
+  .pf-doc { color: #111111; -webkit-print-color-adjust: exact;${font ? " font-family: " + font + ";" : ""} }
+  .pf-copy { text-align: right; font-size: 10px; font-weight: 700; letter-spacing: 1px; text-transform: uppercase; color: #333333; margin-bottom: 4px; }
   .pf-doc div, .pf-doc p { margin: 0; }
   .pf-doc table { width: 100%; border-collapse: collapse; table-layout: fixed; margin: 0; }
   .print-format .pf-doc td.pf-c { padding: 0 !important; border: 0 !important; }
@@ -398,7 +461,12 @@ ${watermark ? `  .pf-page { min-height: ${Math.round(wmEach * 0.7)}px; }
       const rootsHtml = roots((page.roots || []).filter(id => !repeated.has(id)));
       return `<div class="pf-page"${i < last ? ' style="page-break-after:always;"' : ""}>\n${watermark}${rootsHtml}\n</div>`;
     }).join("\n");
-    return `<style>${css}</style>\n<div class="pf-doc">\n${wmSet}${head}${status}${pagesHtml}${foot}\n</div>`;
+    // Copies: the same pages again under each name, a new sheet between them
+    const copies = report ? [] : copyNames(s);
+    const body = copies.length
+      ? `{% for pf_copy in ${JSON.stringify(copies)} %}\n<div class="pf-copy">{{ _(pf_copy) }}</div>\n${pagesHtml}\n{% if not loop.last %}<div style="page-break-after:always;"></div>{% endif %}\n{% endfor %}`
+      : pagesHtml;
+    return `<style>${css}</style>\n<div class="pf-doc">\n${wmSet}${head}${status}${body}${foot}\n</div>`;
   } catch (e) {
     console.error("Jinja generation error:", e);
     return "Error generating Jinja template. Please check console.";
@@ -445,4 +513,11 @@ export function pageContentHeight(tree, opts = {}) {
   const top = headerIds.length ? pxToMm(pad + sum(headerIds)) + 5 : letterHead ? 15 : mm;
   const bottom = ownFooter ? pxToMm(sum(footerIds) + (pageNumbers ? PAGE_NO_HEIGHT : 0)) + 2 + Math.max(mm, 5) : letterHead ? 15 : mm;
   return Math.max(100, Math.round(pageDims(tree).h - (top + bottom) * 96 / 25.4));
+}
+
+// A saved block rendered on its own, for the site to print wherever the block is used.
+// `clip` is what copying elements gives: { roots, nodes }.
+export function toBlockHtml(clip) {
+  const tree = { nodes: clip.nodes || {}, pages: [{ id: "block", roots: clip.roots || [], padding: 0 }] };
+  return (clip.roots || []).map(id => renderNode(tree, id, 0, "", true, false)).join("\n");
 }

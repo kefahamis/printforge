@@ -116,6 +116,130 @@ export const pasteNodes = (tree, clip, parentId, pageIdx = 0) => {
   return [next, added];
 };
 
+// Wraps sibling elements in a new container, where the first of them was. Returns
+// [tree, id of the container], or [tree, null] when they do not share a parent.
+export const groupNodes = (tree, ids) => {
+  const top = topLevel(tree, ids);
+  if (!top.length) return [tree, null];
+  const pid = findParent(tree, top[0]);
+  if (top.some(id => findParent(tree, id) !== pid)) return [tree, null];
+  const page = pid ? null : tree.pages.find(pg => (pg.roots || []).includes(top[0]));
+  const list = pid ? (tree.nodes[pid].children || []) : (page ? page.roots : null);
+  if (!list || top.some(id => !list.includes(id))) return [tree, null];
+  const inside = list.filter(id => top.includes(id)); // keep their existing order
+  const free = pid && tree.nodes[pid].mode === "free";
+  const group = { ...mkC(0, 0), fill: "transparent", stroke: "transparent", strokeWidth: 0, borderRadius: 0, padding: 0, layout: "flex", flexDir: "column", flexWrap: "nowrap", gap: 0, w: "100%", h: 20, label: "Group", children: inside, _flow: !free };
+  const nodes = { ...tree.nodes, [group.id]: group };
+  for (const id of inside) nodes[id] = { ...nodes[id], _flow: true, _free: undefined };
+  const next = list.flatMap(id => id === inside[0] ? [group.id] : inside.includes(id) ? [] : [id]);
+  if (pid) return [{ ...tree, nodes: { ...nodes, [pid]: { ...nodes[pid], children: next } } }, group.id];
+  return [{ ...tree, nodes, pages: tree.pages.map(pg => pg === page ? { ...pg, roots: next } : pg) }, group.id];
+};
+
+// Puts a container's contents where the container was and removes it. Returns [tree, ids].
+export const ungroupNode = (tree, id) => {
+  const el = tree.nodes[id];
+  if (!el || !(el.children || []).length) return [tree, []];
+  const kids = el.children;
+  const pid = findParent(tree, id);
+  const nodes = { ...tree.nodes };
+  delete nodes[id];
+  const swap = list => list.flatMap(x => x === id ? kids : [x]);
+  if (pid) return [{ ...tree, nodes: { ...nodes, [pid]: { ...nodes[pid], children: swap(nodes[pid].children || []) } } }, kids];
+  return [{ ...tree, nodes, pages: tree.pages.map(pg => (pg.roots || []).includes(id) ? { ...pg, roots: swap(pg.roots) } : pg) }, kids];
+};
+
+// ── Fields and colours across a whole design ──────────────────────────────────
+const TEXT_PROPS = ["content", "content2", "value", "showIf", "jinjaExpr", "rowIf"];
+// Renames document fields everywhere a design reads them: { old_name: "new_name" }.
+// Used to carry a design over to a doctype that names the same thing differently.
+export const remapFields = (tree, map) => {
+  const pairs = Object.entries(map || {}).filter(([a, b]) => a && b && a !== b);
+  if (!pairs.length) return tree;
+  const fix = v => typeof v === "string" ? pairs.reduce((t, [a, b]) => t.replace(new RegExp("\\bdoc\\." + a + "\\b", "g"), "doc." + b), v) : v;
+  const name = v => typeof v === "string" && map[v] ? map[v] : v;
+  const nodes = {};
+  for (const [id, n] of Object.entries(tree.nodes)) {
+    const out = { ...n };
+    for (const k of TEXT_PROPS) if (out[k] != null) out[k] = fix(out[k]);
+    if (out.rules) out.rules = out.rules.map(r => ({ ...r, when: fix(r.when) }));
+    if (out.footerRows) out.footerRows = out.footerRows.map(r => ({ ...r, expr: fix(r.expr) }));
+    if (out.columns) out.columns = out.columns.map(c => c && c.expr ? { ...c, expr: fix(c.expr) } : c);
+    if (out.childField) out.childField = name(out.childField);
+    if (out.repeatFor) out.repeatFor = name(out.repeatFor);
+    nodes[id] = out;
+  }
+  const settings = tree.settings ? { ...tree.settings, watermarkField: name(tree.settings.watermarkField) } : tree.settings;
+  return { ...tree, nodes, ...(settings ? { settings } : {}) };
+};
+
+const COLOUR_PROPS = ["color", "bg", "fill", "stroke", "headerBg", "headerColor", "rowBg", "rowAltBg", "rowColor", "borderColor"];
+const hex6 = v => {
+  if (typeof v !== "string") return null;
+  const m = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(v.trim());
+  if (!m) return null;
+  const h = m[1].toLowerCase();
+  return "#" + (h.length === 3 ? h.split("").map(c => c + c).join("") : h);
+};
+const rgb = h => [1, 3, 5].map(i => parseInt(h.slice(i, i + 2), 16));
+const hsl = h => {
+  const [r, g, b] = rgb(h).map(v => v / 255);
+  const max = Math.max(r, g, b), min = Math.min(r, g, b), l = (max + min) / 2, d = max - min;
+  if (!d) return { h: 0, s: 0, l };
+  const sat = d / (1 - Math.abs(2 * l - 1));
+  const hue = max === r ? ((g - b) / d) % 6 : max === g ? (b - r) / d + 2 : (r - g) / d + 4;
+  return { h: (hue * 60 + 360) % 360, s: sat, l };
+};
+// A colour mixed with white until it is as light as `lightness` (0 to 1)
+const tint = (h, lightness) => {
+  const base = hsl(h).l;
+  if (lightness <= base) return h;
+  const t = (lightness - base) / (1 - base);
+  return "#" + rgb(h).map(v => Math.round(v + (255 - v) * t).toString(16).padStart(2, "0")).join("");
+};
+
+// Every colour a design uses and how often, most used first: [{ colour, count }]
+export const designColours = tree => {
+  const count = new Map();
+  const add = v => { const h = hex6(v); if (h) count.set(h, (count.get(h) || 0) + 1); };
+  for (const n of Object.values(tree.nodes || {})) {
+    for (const k of COLOUR_PROPS) add(n[k]);
+    for (const r of n.rules || []) { add(r.color); add(r.bg); }
+  }
+  return [...count.entries()].map(([colour, c]) => ({ colour, count: c })).sort((a, b) => b.count - a.count);
+};
+
+export const replaceColours = (tree, map) => {
+  const swap = v => { const h = hex6(v); return h && map[h] ? map[h] : v; };
+  const nodes = {};
+  for (const [id, n] of Object.entries(tree.nodes)) {
+    const out = { ...n };
+    for (const k of COLOUR_PROPS) if (out[k] != null) out[k] = swap(out[k]);
+    if (out.rules) out.rules = out.rules.map(r => ({ ...r, color: swap(r.color), bg: swap(r.bg) }));
+    nodes[id] = out;
+  }
+  return { ...tree, nodes };
+};
+
+// The colour a design is built around: its most used colour that is neither grey nor pale
+export const accentColour = tree => (designColours(tree).find(({ colour }) => { const c = hsl(colour); return c.s > 0.25 && c.l > 0.12 && c.l < 0.75; }) || {}).colour || null;
+
+// Recolours a design around a brand colour: the accent becomes the brand colour and the
+// pale tints of the accent become equally pale tints of it. Returns the tree unchanged
+// when the design has no accent to replace.
+export const applyBrand = (tree, brand) => {
+  const to = hex6(brand), from = accentColour(tree);
+  if (!to || !from || to === from) return tree;
+  const fromHue = hsl(from).h;
+  const map = { [from]: to };
+  for (const { colour } of designColours(tree)) {
+    const c = hsl(colour);
+    const near = Math.min(Math.abs(c.h - fromHue), 360 - Math.abs(c.h - fromHue)) < 25;
+    if (colour !== from && near && c.s > 0.12 && c.l >= 0.75) map[colour] = tint(to, c.l);
+  }
+  return replaceColours(tree, map);
+};
+
 // Only elements placed freely (by x and y) can be lined up; the rest follow their container's layout
 export const isFree = (tree, id) => {
   const pid = findParent(tree, id);
@@ -274,7 +398,9 @@ export const mkTbl = (x = 40, y = 80) => ({ id: uid(), type: "table", children: 
 // Both are drawn by the site when printing; `value` is a template expression unless `source` is "text"
 export const mkQR = (x = 80, y = 80) => ({ id: uid(), type: "qr", children: [], x, y, w: 96, h: 96, source: "expr", value: "doc.name" });
 export const mkBarcode = (x = 80, y = 80) => ({ id: uid(), type: "barcode", children: [], x, y, w: 220, h: 64, source: "expr", value: "doc.name", symbology: "code128", showText: true });
-export const FACS = { text: mkT, container: mkC, image: mkI, rect: mkR, line: mkL, circle: mkCircle, triangle: mkTriangle, table: mkTbl, path: mkPath, qr: mkQR, barcode: mkBarcode };
+// A block kept on the site and printed from there, so formats that use it follow its changes
+export const mkShared = (x = 0, y = 0) => ({ id: uid(), type: "shared", children: [], x, y, w: "100%", h: 60, block: "" });
+export const FACS = { text: mkT, container: mkC, image: mkI, rect: mkR, line: mkL, circle: mkCircle, triangle: mkTriangle, table: mkTbl, path: mkPath, qr: mkQR, barcode: mkBarcode, shared: mkShared };
 
 // ── Initial data ──────────────────────────────────────────────────────────────
 // Nested boxes must not inherit mkC's 714x120 default size, and widths in a row

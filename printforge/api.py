@@ -1,4 +1,5 @@
 import json
+import re
 from urllib.parse import quote
 
 import frappe
@@ -16,6 +17,10 @@ from printforge.utils import (
 
 MARGIN_FIELDS = ("margin_top", "margin_bottom", "margin_left", "margin_right")
 VERSION_DOCTYPE = "PrintForge Version"
+BLOCK_DOCTYPE = "PrintForge Block"
+BRAND_KEY = "printforge_brand_colour"
+FONT_EXTENSIONS = (".ttf", ".otf")
+FONT_MAX_BYTES = 2 * 1024 * 1024
 # Earlier designs kept per Print Format; the oldest go first
 VERSIONS_KEPT = 15
 
@@ -227,6 +232,118 @@ def delete_versions(doc, method=None):
 	"""Print Format on_trash: its kept versions go with it."""
 	for name in frappe.get_all(VERSION_DOCTYPE, filters={"print_format": doc.name}, pluck="name"):
 		frappe.delete_doc(VERSION_DOCTYPE, name, ignore_permissions=True, force=True)
+
+
+@frappe.whitelist()
+def list_blocks():
+	"""Blocks saved from the builder for reuse in other designs."""
+	_check_permission()
+	return frappe.get_all(BLOCK_DOCTYPE, fields=["name", "linked", "height"], order_by="name asc", limit_page_length=0)
+
+
+@frappe.whitelist()
+def get_block(block):
+	_check_permission()
+	doc = frappe.get_doc(BLOCK_DOCTYPE, block)
+	return {"name": doc.name, "design": doc.design, "linked": cint(doc.linked), "height": cint(doc.height)}
+
+
+@frappe.whitelist(methods=["POST"])
+def save_block(block, design, html="", height=0, linked=0):
+	"""Create a block, or replace the one with that name.
+
+	`html` is what the block prints as; formats that insert the block linked render it from
+	here when a document is printed, so replacing a block changes them all.
+	"""
+	_check_permission()
+	block = (block or "").strip()
+	if not block:
+		frappe.throw(_("Give the block a name."))
+	if not isinstance(design, str):
+		design = json.dumps(design)
+	try:
+		json.loads(design)
+	except ValueError:
+		frappe.throw(_("The block data is not valid JSON."))
+	if html:
+		from frappe.utils.jinja import validate_template
+
+		validate_template(html)
+
+	if frappe.db.exists(BLOCK_DOCTYPE, block):
+		doc = frappe.get_doc(BLOCK_DOCTYPE, block)
+	else:
+		doc = frappe.new_doc(BLOCK_DOCTYPE)
+		doc.title = block
+	(design, html), _moved = replace_data_images([design, html or ""], _save_block_image)
+	doc.update({"design": design, "html": html, "height": cint(height), "linked": cint(linked)})
+	doc.save(ignore_permissions=True)
+	return {"name": doc.name, "linked": cint(doc.linked), "height": cint(doc.height)}
+
+
+@frappe.whitelist(methods=["POST"])
+def delete_block(block):
+	_check_permission()
+	frappe.delete_doc(BLOCK_DOCTYPE, block, ignore_permissions=True)
+
+
+def _save_block_image(file_name, content):
+	"""Images inside a block are stored once as public files, not attached to any one format."""
+	existing = frappe.db.get_value("File", {"file_name": file_name, "attached_to_doctype": BLOCK_DOCTYPE}, "file_url")
+	if existing:
+		return existing
+	file_doc = frappe.get_doc(
+		{"doctype": "File", "file_name": file_name, "content": content, "is_private": 0, "attached_to_doctype": BLOCK_DOCTYPE}
+	)
+	file_doc.insert(ignore_permissions=True)
+	return file_doc.file_url
+
+
+@frappe.whitelist()
+def get_brand():
+	"""The brand colour designs on this site can be recoloured around."""
+	_check_permission()
+	return frappe.db.get_default(BRAND_KEY) or ""
+
+
+@frappe.whitelist(methods=["POST"])
+def save_brand(colour):
+	_check_permission()
+	colour = (colour or "").strip()
+	if colour and not re.fullmatch(r"#[0-9a-fA-F]{6}", colour):
+		frappe.throw(_("The brand colour must be a colour such as #7f2a7b."))
+	frappe.db.set_default(BRAND_KEY, colour)
+	return colour
+
+
+@frappe.whitelist(methods=["POST"])
+def upload_font(filename, data):
+	"""Store a font for designs to print in. `data` is the file as a data URL or base64."""
+	import base64
+	import hashlib
+
+	_check_permission()
+	filename = (filename or "").strip().split("/")[-1].split("\\")[-1]
+	if not filename.lower().endswith(FONT_EXTENSIONS):
+		frappe.throw(_("Upload a .ttf or .otf font file."))
+	try:
+		content = base64.b64decode((data or "").split(",")[-1], validate=True)
+	except Exception:
+		frappe.throw(_("The font file could not be read."))
+	if not content or len(content) > FONT_MAX_BYTES:
+		frappe.throw(_("The font file is empty or larger than 2 MB."))
+	# TrueType, OpenType and TrueType collections start with one of these
+	if content[:4] not in (b"\x00\x01\x00\x00", b"OTTO", b"true", b"ttcf"):
+		frappe.throw(_("That file is not a TrueType or OpenType font."))
+
+	ext = filename[-4:].lower()
+	stored = f"{FILE_PREFIX}font-{hashlib.sha1(content).hexdigest()[:12]}{ext}"
+	url = frappe.db.get_value("File", {"file_name": stored}, "file_url")
+	if not url:
+		file_doc = frappe.get_doc({"doctype": "File", "file_name": stored, "content": content, "is_private": 0})
+		file_doc.insert(ignore_permissions=True)
+		url = file_doc.file_url
+	return {"url": url, "name": filename[:-4]}
 
 
 def _save_image(print_format):

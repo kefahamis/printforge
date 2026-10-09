@@ -123,7 +123,7 @@ export function CNode({ nodeId, tree, selected, multi = [], onSelect, onUpdate, 
   const layoutStyles = el.layout === "flex" ? { display: "flex", flexDirection: el.flexDir, flexWrap: el.flexWrap, justifyContent: el.justifyContent, alignItems: el.alignItems, gap: el.gap } : el.layout === "grid" ? { display: "grid", gridTemplateColumns: el.gridCols, columnGap: el.colGap, rowGap: el.rowGap } : {};
 
   if (el.type === "text") {
-    const txt = preview ? subst(el.content) : el.content;
+    const txt = (preview ? subst(el.content) : el.content) + (!el.isRich && (el.content2 || "").trim() ? " / " + el.content2.trim().replace(/&/g, "&amp;").replace(/</g, "&lt;") : "");
     body = <div dangerouslySetInnerHTML={{ __html: txt }} style={{ minHeight: el.h, fontSize: el.isRich ? "inherit" : el.fontSize, fontWeight: el.isRich ? "inherit" : el.fontWeight, color: el.isRich ? "inherit" : el.color, textAlign: el.isRich ? "inherit" : el.align, fontStyle: el.isRich ? "inherit" : (el.italic ? "italic" : "normal"), lineHeight: el.isRich ? "inherit" : el.lineHeight, background: el.bg, padding: el.padding, borderRadius: el.borderRadius, whiteSpace: el.isRich ? "normal" : "pre-wrap", overflow: "hidden", wordBreak: "break-word", ...(flow ? { width: "100%" } : {}) }} />;
   } else if (el.type === "rect") {
     body = (
@@ -172,6 +172,8 @@ export function CNode({ nodeId, tree, selected, multi = [], onSelect, onUpdate, 
         <span style={{ fontSize: 9, color: "#666", fontFamily: "var(--mono)", background: "rgba(255,255,255,.8)", padding: "2px 4px", borderRadius: 3, position: "relative", zIndex: 1 }}>{el.logoType !== "company" ? "Custom image" : el.jinjaExpr === COMPANY_LOGO_EXPR ? "Company logo" : el.jinjaExpr}</span>
       </div>
     );
+  } else if (el.type === "shared") {
+    body = <div style={{ minHeight: el.h, border: "1px dashed #9a8fb0", background: "rgba(127,90,200,.06)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 10, color: "#6b5bd2", fontFamily: "var(--mono)" }}>{preview ? "" : "shared block: " + (el.block || "none")}</div>;
   } else if (el.type === "qr") {
     body = <div style={{ height: el.h, display: "flex" }}><FakeQR size={Math.min(el.w, el.h)} /></div>;
   } else if (el.type === "barcode") {
@@ -183,12 +185,12 @@ export function CNode({ nodeId, tree, selected, multi = [], onSelect, onUpdate, 
       <div style={{ overflow: "hidden", height: el.h }}>
         <table style={{ width: "100%", borderCollapse: "collapse", tableLayout: "fixed" }}>
           <thead><tr style={{ background: el.headerBg, color: el.headerColor }}>
-            {cols.map((c, i) => c ? <th key={c.id || i} style={{ width: c.width, textAlign: c.align, padding: "7px 10px", fontSize: el.headerFontSize, fontWeight: 600 }}>{c.label}</th> : null)}
+            {cols.map((c, i) => c ? <th key={c.id || i} style={{ width: c.width, textAlign: c.align, padding: "7px 10px", fontSize: el.headerFontSize, fontWeight: 600 }}>{c.label}{(c.label2 || "").trim() ? " / " + c.label2.trim() : ""}</th> : null)}
           </tr></thead>
           <tbody>{rows.map((row, i) => <tr key={i} style={{ background: i % 2 === 0 ? el.rowBg : el.rowAltBg }}>
             {cols.map((c, j) => c ? (
               <td key={c.id || j} style={{ textAlign: c.align, padding: "6px 10px", fontSize: el.fontSize, color: el.rowColor, borderBottom: "1px solid " + el.borderColor }}>
-                {preview ? subst("{{item." + c.field + "}}", row) : <span style={{ opacity: .3, fontSize: 9, fontFamily: "var(--mono)" }}>item.{c.field}</span>}
+                {preview && !c.kind ? subst("{{item." + c.field + "}}", row) : <span style={{ opacity: .3, fontSize: 9, fontFamily: "var(--mono)" }}>{c.kind === "calc" ? "= " + (c.expr || "") : c.kind === "image" ? "image: " + c.field : c.kind === "barcode" ? "barcode: " + c.field : "item." + c.field}</span>}
               </td>
             ) : null)}
           </tr>)}
@@ -215,7 +217,7 @@ export function CNode({ nodeId, tree, selected, multi = [], onSelect, onUpdate, 
   }
 
   return (
-    <div className={"elw" + (isSel && !preview ? " sel" : "")} data-pf-node={nodeId} style={baseStyle}
+    <div className={"elw" + (isSel && !preview ? " sel" : "")} data-pf-node={nodeId} style={{ ...baseStyle, ...(el.hidden ? (preview ? { display: "none" } : { opacity: .25 }) : {}), ...(el.locked && !preview ? { pointerEvents: "none" } : {}) }}
       onMouseDown={onMD}
       onContextMenu={e => { if (preview || !onContextMenu) return; e.preventDefault(); e.stopPropagation(); onSelect(nodeId); onContextMenu(e, nodeId); }}
       onClick={e => e.stopPropagation()}

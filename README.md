@@ -55,20 +55,25 @@ out as designed. What has not been run is the app inside a real site, so confirm
 5. If you make a report format, pick it in the report's Print dialog and check the
    rows and totals.
 
-Items 1 to 3 have since been run on a Frappe 16.36 / ERPNext 16.37 site with
-wkhtmltopdf, along with a three-page document with a repeating header, footer and page
-numbers, QR codes, barcodes, custom receipt and label paper, the watermark, the
-ready-made designs for Sales Invoice, Quotation, Purchase Order, Payment Entry and Item,
-and version history. Report formats (item 5), and the Delivery Note and Salary Slip
-designs with a real document, have not.
+Items 1 to 4 have since been run on a Frappe 16.36 / ERPNext 16.37 site with wkhtmltopdf,
+along with: a three-page document with a repeating header, footer and page numbers;
+custom receipt and label paper; the watermark; copies; grouped tables; linked blocks; an
+uploaded font; and version history. QR codes and Code 128, Code 39 and EAN-13 barcodes
+drawn by the site were read back with a decoder. The ready-made designs were printed
+with real documents except the payslip, packing slip and goods received note, which had
+none on that site; their fields were checked against the doctypes. The customer
+statement was filled from the General Ledger report through Frappe's browser template
+function, not through the report's own Print dialog.
 
 Newer Frappe branches add a Chrome-based PDF generator; the layout here is built for
 wkhtmltopdf.
 
 ## Using it
 
-1. **New** — pick a ready-made design (tax invoice, quotation, purchase order, delivery
-   note, payment receipt, payslip, till receipt, item label, carton labels), or type any
+1. **New** — pick a ready-made design (tax invoice, credit note, proforma invoice,
+   quotation, purchase order, goods received note, delivery note, packing slip, payment
+   receipt, payment voucher, cheque, payslip, till receipt, item label, carton labels,
+   customer statement), or type any
    doctype on the site and load its fields, pick a report, or start from a preset.
    The **template gallery** (Ctrl+K, "template") lists the same designs with further
    Sales Invoice, Purchase Order and Delivery Note layouts.
@@ -171,6 +176,45 @@ PrintForge. Use a different name in that case.
   and nudged. Lining up and even spacing apply to elements placed freely in the same
   container; elements in a flow layout are arranged by their container.
 
+- **Tables.** A column can show the field's value, a calculation (`item.qty * item.rate`,
+  printed as money in the document's currency unless you untick that), a picture from an
+  image field, or a barcode of the field. *Print a row only if* leaves out rows that fail
+  a test (`item.qty > 0`). *Group rows by* prints rows that share a value together under
+  it as a heading, with an optional subtotal after each group.
+- **Copies.** List names in the Page panel (`Original, Duplicate, Triplicate`) and the
+  whole document is printed once under each, on separate sheets, with the name at the top
+  right. Page numbers then count every sheet of every copy.
+- **Style when.** A text element can change colour, background or weight while a
+  condition holds for the document, e.g. red and bold while
+  `doc.outstanding_amount > 0`.
+- **Second language.** A text element and each table heading can carry a second wording,
+  printed after the first: `Total / Jumla`.
+- **Pictures from the document.** An image element can read an image field of the
+  document, or the picture of its customer, supplier, employee, or of whoever created or
+  last changed it. Nothing is printed where there is no picture.
+- **Your blocks.** *Save as a block* keeps the selection for other designs, on the site
+  for everyone who uses the builder (in the browser when run standalone). Inserting one
+  adds a copy to edit. A block saved as *linked* can also be inserted as a single
+  element that the site fills in when printing, so every format that uses it follows the
+  block when it is saved again under the same name: one header for many formats. A
+  linked block prints nothing if it is deleted.
+- **Colours and brand.** The Page panel lists the colours a design uses; changing one
+  changes every element that uses it. Set a brand colour once (kept on the site) and
+  *Apply* recolours a design around it, pale tints included.
+- **A font of your own.** Upload a .ttf or .otf file in the Page panel. It is stored on
+  the site as a public file and embedded in the PDF.
+- **Another doctype.** *Use this design for another doctype* on the Doctype tab compares
+  the fields the design reads with the other doctype's, suggests replacements for those
+  named differently (posting date and transaction date, say), and switches the design
+  over. Publish it under a new name; the original is untouched.
+- **Layers.** Lock an element so clicks on the page pass through it, or hide it, which
+  also leaves it out when printing. Both are undone from the Layers tab. Ctrl+G wraps
+  the selected neighbours in a container and Ctrl+Shift+G undoes that.
+
+To give each company its own layout from one format, give the parts that differ a *Show
+only if* such as `doc.company == "Acme Ltd"`. PrintForge does not change which format
+Frappe picks by default for a company.
+
 Plain wording in a design is printed through Frappe's translator, so labels follow the
 language chosen in the print dialog wherever the site has a translation.
 
@@ -185,8 +229,9 @@ the server, so a few things differ from document formats:
 - Text can use `{{ title }}`, `{{ filters.from_date }}` and the like. `doc` does not
   exist in a report.
 - Letter head comes from the report's own Print dialog; the repeat, page-number,
-  watermark and company-logo options do not apply, and QR codes and barcodes are left
-  out.
+  watermark, copies and company-logo options do not apply, and QR codes, barcodes,
+  linked blocks and the table's calculation, picture, row-test and grouping options are
+  left out.
 - There is no live preview. Publish, then print the report.
 - Columns can only be loaded automatically for reports that run without filters. For
   the rest, type the column names into the field list.
@@ -245,8 +290,9 @@ publishing or exporting as JSON is then the way to keep the work.
 | `src/styles.js`, `src/doctypes.js` | Editor stylesheet; preset doctype list |
 | `src/*.test.js(x)` | Tests |
 | `printforge/api.py` | Site API: publish, preview (HTML and PDF), open designs and earlier versions, doctypes, reports and fields |
-| `printforge/jinja.py` | QR code and barcode functions that published formats call when printing |
+| `printforge/jinja.py` | QR code, barcode and linked-block functions that published formats call when printing |
 | `printforge/printforge/doctype/printforge_version/` | Earlier designs of each published format |
+| `printforge/printforge/doctype/printforge_block/` | Blocks saved for reuse, with the HTML linked ones print |
 | `printforge/utils.py` | Helpers that need no site; tested in `printforge/tests/` |
 | `.github/workflows/ci.yml` | Lint, tests and build on every push |
 | `printforge/public/js/print_format.js` | *Edit in PrintForge* button on the Print Format form |

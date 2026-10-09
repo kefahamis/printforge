@@ -55,7 +55,8 @@ export function validateDesign(tree, doctype, docFields, html, formatName) {
       if (!report && childTables.size > 0 && !childTables.has(cf)) error(`A table reads "doc.${cf}", which is not a child table of ${doctype}.`);
       if (!(node.columns || []).length) error('A table has no columns.');
       for (const c of (node.columns || [])) {
-        if (!c.field?.trim()) error(`Table column "${c.label || '(unnamed)'}" has no field.`);
+        if (c.kind === "calc") { if (!(c.expr || "").trim()) error(`Table column "${c.label || '(unnamed)'}" has no calculation.`); }
+        else if (!c.field?.trim()) error(`Table column "${c.label || '(unnamed)'}" has no field.`);
         else if (!/^[A-Za-z_]\w*$/.test(c.field.trim())) error(`Table column "${c.label || c.field}" has a field name that is not valid: "${c.field}".`);
         else if (report && known.size > 0 && !known.has(c.field.trim())) warning(`Table column "${c.label || c.field}" reads "${c.field}", which is not in the column list for the ${doctype} report.`);
       }

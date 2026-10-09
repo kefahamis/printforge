@@ -1,9 +1,9 @@
 import { useState, useEffect } from 'react';
-import { PAGE_SIZES, CUSTOM_PAPERS, FONTS, getSettings, marginMm, watermarkFields } from '../exporter.js';
-import { uid, dc, findParent, getDepth, isDesc, isFree, mkT, mkC, mkI } from '../tree.js';
+import { PAGE_SIZES, CUSTOM_PAPERS, FONTS, getSettings, marginMm, watermarkFields, customFont } from '../exporter.js';
+import { uid, dc, findParent, getDepth, isDesc, isFree, designColours, accentColour, mkT, mkC, mkI } from '../tree.js';
 import { BLOCKS } from '../templates.js';
 import { FRAPPE, frappeCall } from '../frappe.js';
-import { Num, Txt, RichTextEditor, Sel, CRow, Sec, Sdiv } from './atoms.jsx';
+import { Num, Txt, RichTextEditor, Sel, CRow, Sec, Sdiv, Swatch } from './atoms.jsx';
 
 const QR_ICON = (n, sw) => <svg width={n} height={n} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={sw}><rect x="3" y="3" width="7" height="7" /><rect x="14" y="3" width="7" height="7" /><rect x="3" y="14" width="7" height="7" /><path d="M14 14h3v3h-3zM20 14v1M17 20h4M20 17v1" /></svg>;
 const BARCODE_ICON = (n, sw) => <svg width={n} height={n} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={sw}><path d="M4 5v14M8 5v14M11 5v14M15 5v14M18 5v14M21 5v14" /></svg>;
@@ -146,6 +146,7 @@ export function LayerTree({ tree, selected, multi = [], onSelect, onDrop, depth,
                 {label}
               </span>
               {el.mode === "flow" && <span style={{ fontSize: 7, padding: "1px 3px", background: "var(--ad)", color: "var(--ac)", borderRadius: 2, flexShrink: 0, opacity: .7, marginLeft: 4 }}>{el.layout}</span>}
+              {(el.hidden || el.locked) && <span style={{ fontSize: 9, color: "var(--t2)", marginLeft: 4, flexShrink: 0 }} title={(el.hidden ? "Hidden, not printed. " : "") + (el.locked ? "Locked." : "")}>{el.hidden ? "◌" : ""}{el.locked ? "🔒" : ""}</span>}
             </div>
             {hasKids && !isCollapsed && <LayerTree tree={tree} selected={selected} multi={multi} onSelect={onSelect} onDrop={onDrop} depth={depth + 1} ids={el.children} />}
           </div>
@@ -181,6 +182,90 @@ export function Breadcrumb({ tree, selected, onSelect }) {
         );
       })}
     </div>
+  );
+}
+
+// ── Pictures a document can supply ────────────────────────────────────────────
+// `needs`: the field the document must have for the choice to make sense
+const IMAGE_SOURCES = [
+  { l: "Customer's picture", needs: "customer", v: '{{ frappe.db.get_value("Customer", doc.customer, "image") }}' },
+  { l: "Supplier's picture", needs: "supplier", v: '{{ frappe.db.get_value("Supplier", doc.supplier, "image") }}' },
+  { l: "Employee's photo", needs: "employee", v: '{{ frappe.db.get_value("Employee", doc.employee, "image") }}' },
+  { l: "Picture of who created it", v: '{{ frappe.db.get_value("User", doc.owner, "user_image") }}' },
+  { l: "Picture of who last changed it", v: '{{ frappe.db.get_value("User", doc.modified_by, "user_image") }}' },
+];
+
+// ── Save as a block ───────────────────────────────────────────────────────────
+function SaveBlock({ onSave, onCancel }) {
+  const [name, setName] = useState("");
+  const [linked, setLinked] = useState(false);
+  return (
+    <div style={{ padding: 8, marginBottom: 10, background: "var(--b3)", border: "1px solid var(--bd)", borderRadius: "var(--r6)" }}>
+      <input className="pi" autoFocus value={name} onChange={e => setName(e.target.value)} onKeyDown={e => { if (e.key === "Enter" && name.trim()) onSave(name.trim(), linked); if (e.key === "Escape") onCancel(); }} placeholder="Name, e.g. Bank details" style={{ marginBottom: 6 }} />
+      {FRAPPE && <label style={{ display: "flex", alignItems: "flex-start", gap: 6, fontSize: 10, color: "var(--t1)", marginBottom: 6, cursor: "pointer", lineHeight: 1.4 }}><input type="checkbox" checked={linked} onChange={e => setLinked(e.target.checked)} style={{ accentColor: "var(--ac)", marginTop: 1 }} />Can also be inserted linked, so formats that use it follow later changes (a shared header, say)</label>}
+      <div style={{ display: "flex", gap: 4 }}>
+        <button className="bcb on" disabled={!name.trim()} onClick={() => onSave(name.trim(), linked)} style={{ flex: 1, padding: "5px 4px" }}>Save</button>
+        <button className="bcb" onClick={onCancel} style={{ flex: 1, padding: "5px 4px" }}>Cancel</button>
+      </div>
+      <p style={{ fontSize: 10, color: "var(--t2)", marginTop: 6 }}>A block with the same name is replaced.</p>
+    </div>
+  );
+}
+
+// ── A font of your own ────────────────────────────────────────────────────────
+function FontUpload({ settings, onUpdateSettings, onUpload }) {
+  const [msg, setMsg] = useState("");
+  const pick = e => {
+    const file = e.target.files[0];
+    e.target.value = "";
+    if (!file) return;
+    if (!/\.(ttf|otf)$/i.test(file.name)) { setMsg("Choose a .ttf or .otf font file; the PDF step cannot use other kinds."); return; }
+    if (file.size > 2 * 1024 * 1024) { setMsg("That font file is over 2 MB."); return; }
+    const reader = new FileReader();
+    reader.onload = async re => {
+      const name = file.name.replace(/\.(ttf|otf)$/i, "");
+      try {
+        const url = onUpload ? await onUpload(file.name, re.target.result) : re.target.result;
+        onUpdateSettings({ customFont: { name, url }, font: "custom" });
+        setMsg("");
+      } catch (err) { setMsg(err.message); }
+    };
+    reader.readAsDataURL(file);
+  };
+  return (
+    <div style={{ marginBottom: 12 }}>
+      <input type="file" id="pf-font-upload" accept=".ttf,.otf" style={{ display: "none" }} onChange={pick} />
+      <button className="bcb" onClick={() => document.getElementById("pf-font-upload").click()} style={{ width: "100%", padding: "6px 8px" }}>{customFont(settings) ? "Replace the uploaded font" : "Upload a font (.ttf or .otf)"}</button>
+      {msg && <p style={{ fontSize: 10, color: "var(--rd)", marginTop: 4 }}>{msg}</p>}
+    </div>
+  );
+}
+
+// ── Colours of the design ─────────────────────────────────────────────────────
+function Colours({ tree, tools }) {
+  const colours = designColours(tree).slice(0, 12);
+  const accent = accentColour(tree);
+  const brand = tools.brand || "";
+  if (!colours.length) return null;
+  return (
+    <Sec title="Colours in this design">
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 6 }}>
+        {colours.map(c => (
+          <label key={c.colour} title={c.colour + " · used " + c.count + " time" + (c.count === 1 ? "" : "s") + ". Click to change it everywhere."} style={{ width: 24, height: 24, borderRadius: 4, border: "1.5px solid " + (c.colour === accent ? "var(--ac)" : "var(--bm)"), background: c.colour, cursor: "pointer", position: "relative", overflow: "hidden" }}>
+            <input type="color" value={c.colour} onChange={e => tools.onReplaceColour && tools.onReplaceColour(c.colour, e.target.value)} style={{ position: "absolute", inset: -4, width: 36, height: 36, opacity: 0, cursor: "pointer" }} />
+          </label>
+        ))}
+      </div>
+      <p style={{ fontSize: 10, color: "var(--t2)", marginBottom: 8 }}>Changing one changes every element that uses it.{accent ? " The outlined one is what the design is built around." : ""}</p>
+      {tools.setBrand && <>
+        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+          <Swatch value={brand || "#7f2a7b"} onChange={tools.setBrand} />
+          <div style={{ flex: 1, fontSize: 11, color: "var(--t1)" }}>Brand colour {brand ? <span className="mono" style={{ color: "var(--t2)" }}>{brand}</span> : <span style={{ color: "var(--t2)" }}>(not set)</span>}</div>
+          <button className="bcb" disabled={!brand || !accent} onClick={() => tools.onApplyBrand(brand)} title={accent ? "Recolour this design around the brand colour" : "This design has no accent colour to replace"}>Apply</button>
+        </div>
+        <p style={{ fontSize: 10, color: "var(--t2)", marginTop: 4 }}>{FRAPPE ? "Remembered for everyone on this site." : "Remembered in this browser."} Apply recolours a design, pale tints included.</p>
+      </>}
+    </Sec>
   );
 }
 
@@ -230,7 +315,7 @@ function Watermark({ settings, docFields, onUpdateSettings }) {
 }
 
 // ── Props panel ───────────────────────────────────────────────────────────────
-export function Props({ tree, selected, multi = [], onAlign, onDistribute, onDeleteMany, onDupMany, onCopy, docFields, onUpdate, onDelete, onDup, onZOrder, onAddChild, onUpdateSettings, showRulers, setShowRulers, showGrid, setShowGrid, gridSize, setGridSize, activePageIdx, onUpdatePage, penMode, setPenMode, selPointIdx, setSelPointIdx }) {
+export function Props({ tools = {}, tree, selected, multi = [], onAlign, onDistribute, onDeleteMany, onDupMany, onCopy, docFields, onUpdate, onDelete, onDup, onZOrder, onAddChild, onUpdateSettings, showRulers, setShowRulers, showGrid, setShowGrid, gridSize, setGridSize, activePageIdx, onUpdatePage, penMode, setPenMode, selPointIdx, setSelPointIdx }) {
   const el = selected ? tree.nodes[selected] : null;
   const page = tree.pages[activePageIdx];
   const settings = getSettings(tree);
@@ -239,7 +324,8 @@ export function Props({ tree, selected, multi = [], onAlign, onDistribute, onDel
   const up = (k, v) => onUpdatePage(activePageIdx, { [k]: v });
   const pid = selected ? findParent(tree, selected) : null;
   const dep = selected ? getDepth(tree, selected) : 0;
-  const TL = { text: "Text", container: "Container", image: "Image", rect: "Rectangle", circle: "Circle", triangle: "Triangle", line: "Line", table: "Table", path: "Path", qr: "QR code", barcode: "Barcode" };
+  const [saving, setSaving] = useState(false);
+  const TL = { text: "Text", container: "Container", image: "Image", rect: "Rectangle", circle: "Circle", triangle: "Triangle", line: "Line", table: "Table", path: "Path", qr: "QR code", barcode: "Barcode", shared: "Shared block" };
 
   if (el && multi.length > 0) {
     const ids = [selected, ...multi];
@@ -259,7 +345,9 @@ export function Props({ tree, selected, multi = [], onAlign, onDistribute, onDel
         {!canAlign && <p style={{ fontSize: 10, color: "var(--t2)", marginBottom: 12, lineHeight: 1.5 }}>Lining up needs elements placed freely inside the same container (Child Mode: Free). Elements in a flow layout are arranged by their container instead.</p>}
         <Sdiv />
         <Sec title="All selected">
-          <div style={{ display: "flex", gap: 4 }}>{btn("Copy", onCopy)}{btn("Duplicate", onDupMany)}{btn("Delete", onDeleteMany)}</div>
+          <div style={{ display: "flex", gap: 4, marginBottom: 4 }}>{btn("Copy", onCopy)}{btn("Duplicate", onDupMany)}{btn("Delete", onDeleteMany)}</div>
+          <div style={{ display: "flex", gap: 4 }}>{btn("Group (Ctrl+G)", tools.onGroup, !!tools.onGroup)}{btn("Save as a block", () => setSaving(true), !!tools.onSaveBlock)}</div>
+          {saving && <SaveBlock onSave={(n, linked) => { tools.onSaveBlock(n, linked); setSaving(false); }} onCancel={() => setSaving(false)} />}
         </Sec>
         <p style={{ fontSize: 10, color: "var(--t2)", lineHeight: 1.5 }}>Shift+click adds or removes an element. Ctrl+C and Ctrl+V copy and paste, also between designs.</p>
       </div>
@@ -299,8 +387,13 @@ export function Props({ tree, selected, multi = [], onAlign, onDistribute, onDel
         </div>
         <p style={{ fontSize: 10, color: "var(--t2)", marginBottom: 12 }}>{marginMm(tree)} mm on every side of the printed page. The red lines on the page show roughly where each printed page ends.</p>
         <div className="prow" style={{ marginBottom: 12 }}>
-          <Sel label="Font" value={settings.font || ""} onChange={v => onUpdateSettings({ font: v })} options={FONTS.map(f => ({ v: f, l: f ? f.split(",")[0].replace(/"/g, "") : "Site print font" }))} />
+          <Sel label="Font" value={settings.font || ""} onChange={v => onUpdateSettings({ font: v })} options={[...FONTS.map(f => ({ v: f, l: f ? f.split(",")[0].replace(/"/g, "") : "Site print font" })), ...(customFont(settings) ? [{ v: "custom", l: customFont(settings).name.slice(3) + " (uploaded)" }] : [])]} />
         </div>
+        <FontUpload settings={settings} onUpdateSettings={onUpdateSettings} onUpload={tools.onUploadFont} />
+        {settings.printFor !== "Report" && <>
+          <div className="prow"><Txt label="Copies" value={settings.copies || ""} onChange={v => onUpdateSettings({ copies: v })} ph="Original, Duplicate, Triplicate" /></div>
+          <p style={{ fontSize: 10, color: "var(--t2)", margin: "4px 0 12px" }}>{(settings.copies || "").trim() ? "The whole document is printed once under each name, on separate sheets. Use {{ pf_copy }} in a text element to place the name yourself." : "Leave empty to print the document once."}</p>
+        </>}
         <label style={{ display: "flex", alignItems: "flex-start", gap: 6, fontSize: 11, color: "var(--t1)", marginBottom: 4, cursor: "pointer" }}>
           <input type="checkbox" checked={!!settings.letterHead} onChange={e => onUpdateSettings({ letterHead: e.target.checked })} style={{ accentColor: "var(--ac)", marginTop: 2 }} />Use the site's letter head and footer
         </label>
@@ -319,6 +412,8 @@ export function Props({ tree, selected, multi = [], onAlign, onDistribute, onDel
             <Num label="Grid Size" value={gridSize} onChange={setGridSize} unit="px" />
           </div>
         )}
+        <Sdiv />
+        <Colours tree={tree} tools={tools} />
         <Sdiv />
         <Sec title="Tracing image">
           <p style={{ fontSize: 10, color: "var(--t2)", marginBottom: 8 }}>Shown behind the page while editing. Not exported.</p>
@@ -372,6 +467,8 @@ export function Props({ tree, selected, multi = [], onAlign, onDistribute, onDel
           </div>
         </div>
         <div style={{ display: "flex", gap: 3 }}>
+          <button className={"ib" + (el.locked ? " on" : "")} onClick={() => u("locked", el.locked ? undefined : true)} title={el.locked ? "Locked: cannot be picked or moved on the page. Click to unlock." : "Lock in place"}>{el.locked ? "🔒" : "🔓"}</button>
+          <button className={"ib" + (el.hidden ? " on" : "")} onClick={() => u("hidden", el.hidden ? undefined : true)} title={el.hidden ? "Hidden: not printed. Click to show." : "Hide (it is then not printed)"}>{el.hidden ? "◌" : "◉"}</button>
           <button className="ib" onClick={() => onDup(selected)} title="Dup"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="9" y="9" width="13" height="13" rx="2" /><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" /></svg></button>
           <button className="ib" onClick={() => onZOrder(selected, "up")} title="Move Up">↑</button>
           <button className="ib" onClick={() => onZOrder(selected, "down")} title="Move Down">↓</button>
@@ -379,6 +476,20 @@ export function Props({ tree, selected, multi = [], onAlign, onDistribute, onDel
         </div>
       </div>
 
+      {(el.hidden || el.locked) && <p style={{ fontSize: 10, color: "var(--t2)", margin: "0 0 10px" }}>{el.hidden ? "Hidden: shown faintly here and left out when printing." : ""}{el.hidden && el.locked ? " " : ""}{el.locked ? "Locked: pick it from the Layers tab to change it." : ""}</p>}
+      <div style={{ display: "flex", gap: 4, marginBottom: 10 }}>
+        {tools.onSaveBlock && el.type !== "shared" && <button className="bcb" style={{ flex: 1, padding: "5px 4px" }} onClick={() => setSaving(true)}>Save as a block</button>}
+        {tools.onUngroup && el.type === "container" && (el.children || []).length > 0 && <button className="bcb" style={{ flex: 1, padding: "5px 4px" }} onClick={() => tools.onUngroup(selected)} title="Ctrl+Shift+G">Ungroup</button>}
+      </div>
+      {saving && <SaveBlock onSave={(n, linked) => { tools.onSaveBlock(n, linked); setSaving(false); }} onCancel={() => setSaving(false)} />}
+      {el.type === "shared" && <>
+        <Sec title="Shared block">
+          <div style={{ fontSize: 12, fontWeight: 600, color: "var(--t0)", marginBottom: 4 }}>{el.block || "None"}</div>
+          <p style={{ fontSize: 10, color: "var(--t2)", lineHeight: 1.5 }}>Kept on the site and printed from there, so every format that uses it follows it when it changes. To change it, insert it as a copy from Your blocks, edit that, and save it again under the same name.</p>
+          <div className="prow" style={{ marginTop: 6 }}><Num label="Height it takes here" value={el.h} onChange={v => u("h", v)} unit="px" min={8} /></div>
+        </Sec>
+        <Sdiv />
+      </>}
       {isRoot && activePageIdx === 0 && settings.printFor !== "Report" && <>
         <Sel label="On every printed page" value={el.repeat || ""} onChange={v => u("repeat", v || undefined)} options={[{ v: "", l: "Print once, where it is" }, { v: "header", l: "Repeat as the page header" }, { v: "footer", l: "Repeat as the page footer" }]} />
         {el.repeat && <p style={{ fontSize: 10, color: "var(--t2)", margin: "4px 0 0" }}>Printed in the {el.repeat === "header" ? "top" : "bottom"} margin of every page, in place of the site's letter head {el.repeat}. The margin grows to fit it.</p>}
@@ -506,6 +617,28 @@ export function Props({ tree, selected, multi = [], onAlign, onDistribute, onDel
         </Sec>
         <FieldPicker docFields={docFields} report={settings.printFor === "Report"} onInsert={v => u("content", (el.content || "") + (el.isRich ? " " + v + " " : v))} />
         {!el.isRich && <>
+          <div className="prow"><Txt label="Second language (printed after a slash)" value={el.content2 || ""} onChange={v => u("content2", v || undefined)} ph="Jumla" /></div>
+          <Sdiv />
+          <Sec title="Style when">
+            {(el.rules || []).map((r, i) => {
+              const set = ch => { const rules = [...(el.rules || [])]; rules[i] = { ...r, ...ch }; u("rules", rules); };
+              return (
+                <div key={i} style={{ marginBottom: 6, padding: 8, background: "var(--b3)", borderRadius: "var(--r6)", border: "1px solid var(--bd)" }}>
+                  <div style={{ display: "flex", gap: 4, marginBottom: 6 }}>
+                    <input className="pi mono" value={r.when || ""} onChange={e => set({ when: e.target.value })} placeholder={settings.printFor === "Report" ? "row.balance < 0" : "doc.outstanding_amount > 0"} />
+                    <button className="ib del" onClick={() => u("rules", (el.rules || []).filter((_, j) => j !== i))}>×</button>
+                  </div>
+                  <CRow label="Text colour" value={r.color || ""} onChange={v => set({ color: v })} />
+                  <div style={{ marginTop: 6 }}><CRow label="Background" value={r.bg || ""} onChange={v => set({ bg: v })} /></div>
+                  <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11, color: "var(--t1)", marginTop: 6, cursor: "pointer" }}><input type="checkbox" checked={!!r.bold} onChange={e => set({ bold: e.target.checked })} style={{ accentColor: "var(--ac)" }} />Bold</label>
+                </div>
+              );
+            })}
+            <button onClick={() => u("rules", [...(el.rules || []), { when: "", color: "#c0392b", bg: "", bold: true }])} style={{ width: "100%", padding: "6px", border: "1px dashed var(--bm)", borderRadius: "var(--r4)", background: "transparent", color: "var(--t1)", cursor: "pointer", fontSize: 11 }}>+ Style for a condition</button>
+            {(el.rules || []).length > 0 && <p style={{ fontSize: 10, color: "var(--t2)", marginTop: 4 }}>Applied when printing, when the condition is true for the document. Later rules win.</p>}
+          </Sec>
+        </>}
+        {!el.isRich && <>
           <Sdiv />
           <Sec title="Typography">
             <div className="prow"><Num label="Size" value={el.fontSize} onChange={v => u("fontSize", v)} unit="px" /><Sel label="Weight" value={el.fontWeight} onChange={v => u("fontWeight", v)} options={[{ v: "300", l: "Light" }, { v: "400", l: "Regular" }, { v: "500", l: "Medium" }, { v: "600", l: "Semibold" }, { v: "700", l: "Bold" }, { v: "800", l: "Extrabold" }]} /></div>
@@ -590,14 +723,27 @@ export function Props({ tree, selected, multi = [], onAlign, onDistribute, onDel
       {el.type === "image" && <>
         <Sec title="Logo Type">
           <div style={{ display: "flex", gap: 4, marginBottom: 8 }}>
-            {[{ v: "company", l: "Company" }, { v: "custom", l: "Custom" }].map(o => (
+            {[{ v: "company", l: "Company" }, { v: "field", l: "From data" }, { v: "custom", l: "Custom" }].map(o => (
               <button key={o.v} onClick={() => u("logoType", o.v)} style={{ flex: 1, padding: "6px 4px", border: "1px solid " + (el.logoType === o.v ? "var(--ac)" : "var(--bm)"), borderRadius: "var(--r4)", background: el.logoType === o.v ? "var(--ad)" : "var(--b3)", color: el.logoType === o.v ? "var(--ac)" : "var(--t0)", cursor: "pointer", fontSize: 10, fontWeight: 600 }}>{o.l}</button>
             ))}
           </div>
         </Sec>
         <Sdiv />
         <Sec title="Source">
-          {el.logoType === "company" ? (
+          {el.logoType === "field" ? (
+            <>
+              <div className="pf">
+                <label>Picture</label>
+                <select className="ps" value="" onChange={e => { if (e.target.value) onUpdate(selected, { jinjaExpr: e.target.value, label: e.target.selectedOptions[0].text }); }}>
+                  <option value="">— pick one —</option>
+                  {docFields.filter(f => !f.isChild && ["Attach Image", "Attach", "Signature"].includes(f.fieldtype)).map(f => <option key={f.name} value={"{{ doc." + f.name + " }}"}>{f.label || f.name}</option>)}
+                  {IMAGE_SOURCES.filter(o => !o.needs || docFields.some(f => f.name === o.needs)).map(o => <option key={o.l} value={o.v}>{o.l}</option>)}
+                </select>
+              </div>
+              <div style={{ marginTop: 6 }}><Txt label="Reads" value={el.jinjaExpr} onChange={v => u("jinjaExpr", v)} mono /></div>
+              <p style={{ fontSize: 10, color: "var(--t2)", marginTop: 4 }}>Nothing is printed for a document that has no picture there.</p>
+            </>
+          ) : el.logoType === "company" ? (
             <Txt label="Jinja Expression" value={el.jinjaExpr} onChange={v => u("jinjaExpr", v)} mono />
           ) : (
             <>
@@ -625,6 +771,12 @@ export function Props({ tree, selected, multi = [], onAlign, onDistribute, onDel
         {settings.printFor !== "Report" && <Sec title="Data Source">
           <Txt label="Child table" value={el.childField || ""} onChange={v => u("childField", v)} mono list="pf-child-tables" />
           <datalist id="pf-child-tables">{docFields.filter(f => f.isChild).map(f => <option key={f.name} value={f.name}>{f.label}</option>)}</datalist>
+          <div style={{ marginTop: 6 }}><Txt label="Print a row only if" value={el.rowIf || ""} onChange={v => u("rowIf", v || undefined)} mono ph="item.qty > 0" /></div>
+          <div className="prow" style={{ marginTop: 6 }}>
+            <Txt label="Group rows by" value={el.groupBy || ""} onChange={v => u("groupBy", v || undefined)} mono ph="item_group" list="pf-table-columns" />
+            <Txt label="Subtotal of" value={el.groupTotal || ""} onChange={v => u("groupTotal", v || undefined)} mono ph="amount" list="pf-table-columns" />
+          </div>
+          {el.groupBy && <p style={{ fontSize: 10, color: "var(--t2)", marginTop: 4 }}>Rows with the same {el.groupBy} are printed together under it as a heading{el.groupTotal ? ", with the " + el.groupTotal + " added up after each group" : ""}.</p>}
         </Sec>}
         <datalist id="pf-table-columns">{(settings.printFor === "Report" ? docFields.filter(f => !f.isChild) : (docFields.find(f => f.isChild && f.name === el.childField)?.columns || [])).map(f => <option key={f.name} value={f.name}>{f.label}</option>)}</datalist>
         <Sdiv />
@@ -635,6 +787,15 @@ export function Props({ tree, selected, multi = [], onAlign, onDistribute, onDel
               <div className="prow"><Txt label="Label" value={col.label} onChange={v => { const c = [...(el.columns || [])]; c[i] = { ...col, label: v }; u("columns", c); }} /></div>
               <div className="prow"><Txt label="Field" value={col.field} onChange={v => { const c = [...(el.columns || [])]; c[i] = { ...col, field: v }; u("columns", c); }} mono list="pf-table-columns" /><Txt label="Width" value={col.width} onChange={v => { const c = [...(el.columns || [])]; c[i] = { ...col, width: v }; u("columns", c); }} /></div>
               <div className="prow"><Sel label="Align" value={col.align} onChange={v => { const c = [...(el.columns || [])]; c[i] = { ...col, align: v }; u("columns", c); }} options={["left", "center", "right"]} /></div>
+              {settings.printFor !== "Report" && <>
+                <div className="prow"><Sel label="Shows" value={col.kind || ""} onChange={v => { const c = [...(el.columns || [])]; c[i] = { ...col, kind: v || undefined }; u("columns", c); }} options={[{ v: "", l: "The field's value" }, { v: "calc", l: "A calculation" }, { v: "image", l: "A picture (image field)" }, { v: "barcode", l: "A barcode of the field" }]} /></div>
+                {col.kind === "calc" && <>
+                  <div className="prow"><Txt label="Calculation" value={col.expr || ""} onChange={v => { const c = [...(el.columns || [])]; c[i] = { ...col, expr: v }; u("columns", c); }} mono ph="item.qty * item.rate" /></div>
+                  <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11, color: "var(--t1)", marginTop: 4, cursor: "pointer" }}><input type="checkbox" checked={col.money !== false} onChange={e => { const c = [...(el.columns || [])]; c[i] = { ...col, money: e.target.checked }; u("columns", c); }} style={{ accentColor: "var(--ac)" }} />Print as money in the document's currency</label>
+                </>}
+                {(col.kind === "image" || col.kind === "barcode") && <div className="prow"><Num label="Height" value={col.size || (col.kind === "image" ? 40 : 36)} onChange={v => { const c = [...(el.columns || [])]; c[i] = { ...col, size: v }; u("columns", c); }} unit="px" min={10} /></div>}
+              </>}
+              <div className="prow"><Txt label="Second language" value={col.label2 || ""} onChange={v => { const c = [...(el.columns || [])]; c[i] = { ...col, label2: v || undefined }; u("columns", c); }} /></div>
             </div>
           ))}
           <button onClick={() => u("columns", [...(el.columns || []), { id: uid(), label: "Column", field: "field", align: "left", width: "auto" }])} style={{ width: "100%", padding: "7px", border: "1px dashed var(--bm)", borderRadius: "var(--r4)", background: "transparent", color: "var(--t1)", cursor: "pointer", fontSize: 11 }} onMouseEnter={e => { e.currentTarget.style.borderColor = "var(--ac)"; e.currentTarget.style.color = "var(--ac)"; }} onMouseLeave={e => { e.currentTarget.style.borderColor = "var(--bm)"; e.currentTarget.style.color = "var(--t1)"; }}>+ Add Column</button>
@@ -727,7 +888,7 @@ COMPONENT_TEMPLATES.push({
   }
 });
 
-export function LeftPanel({ onAdd, onAddTemplate, doctype, setDoctype, docFields, setDocFields, tree, selected, multi, onSelect, penMode, setPenMode, assets, setAssets, onSetTrace, onDrop, openTab }) {
+export function LeftPanel({ tools = {}, onAdd, onAddTemplate, doctype, setDoctype, docFields, setDocFields, tree, selected, multi, onSelect, penMode, setPenMode, assets, setAssets, onSetTrace, onDrop, openTab }) {
   const [tab, setTab] = useState("insert");
   useEffect(() => { if (openTab?.tab) setTab(openTab.tab); }, [openTab]);
   const [nf, setNf] = useState({ name: "", label: "", isChild: false });
@@ -784,6 +945,17 @@ export function LeftPanel({ onAdd, onAddTemplate, doctype, setDoctype, docFields
               </button>
             ))}
           </div>
+          <div className="sl" style={{ paddingInline: 4, marginBottom: 6 }}>Your blocks</div>
+          <div style={{ marginBottom: 12 }}>
+            {(tools.blocks || []).length === 0 && <p style={{ fontSize: 10, color: "var(--t2)", padding: "0 4px", lineHeight: 1.5 }}>Select something on the page and choose Save as a block to keep it here for other designs.</p>}
+            {(tools.blocks || []).map(b => (
+              <div key={b.name} style={{ display: "flex", alignItems: "center", gap: 3, marginBottom: 3 }}>
+                <button onClick={() => tools.onInsertBlock(b, false)} title="Insert a copy you can edit" style={{ flex: 1, minWidth: 0, textAlign: "left", padding: "7px 10px", border: "1px solid var(--bd)", borderRadius: "var(--r4)", background: "var(--b2)", color: "var(--t1)", cursor: "pointer", fontSize: 11, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{b.name}</button>
+                {b.linked && <button className="ib" onClick={() => tools.onInsertBlock(b, true)} title="Insert linked: it stays the same as the saved block, in every format that uses it">⛓</button>}
+                <button className="ib del" onClick={() => tools.onDeleteBlock(b)} title="Delete this block">×</button>
+              </div>
+            ))}
+          </div>
           <div className="sl" style={{ paddingInline: 4, marginBottom: 6 }}>Container Presets</div>
           {[{ label: "Flex Row", cfg: { layout: "flex", flexDir: "row", mode: "flow" } }, { label: "Flex Col", cfg: { layout: "flex", flexDir: "column", mode: "flow" } }, { label: "Grid 2 col", cfg: { layout: "grid", gridCols: "1fr 1fr", mode: "flow" } }, { label: "Grid 3 col", cfg: { layout: "grid", gridCols: "1fr 1fr 1fr", mode: "flow" } }, { label: "Free", cfg: { mode: "free" } }].map(p => (
             <button key={p.label} onClick={() => onAdd("container", p.cfg)} style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "8px 10px", marginBottom: 3, border: "1px solid var(--bd)", borderRadius: "var(--r4)", background: "var(--b2)", color: "var(--t1)", cursor: "pointer", fontSize: 11, transition: "all .12s" }} onMouseEnter={e => { e.currentTarget.style.borderColor = "var(--ac)"; e.currentTarget.style.color = "var(--ac)"; }} onMouseLeave={e => { e.currentTarget.style.borderColor = "var(--bd)"; e.currentTarget.style.color = "var(--t1)"; }}>
@@ -837,6 +1009,7 @@ export function LeftPanel({ onAdd, onAddTemplate, doctype, setDoctype, docFields
               <button className="bcb" disabled={siteFields === "loading"} onClick={loadSiteFields} style={{ width: "100%", marginTop: 6, padding: "6px 8px" }}>{siteFields === "loading" ? "Loading" : "Load fields from site"}</button>
               {siteFields && siteFields !== "loading" && <p style={{ fontSize: 10, color: siteFields.ok ? "var(--t2)" : "var(--rd)", marginTop: 4 }}>{siteFields.msg}</p>}
             </>}
+            {tools.onRemap && <button className="bcb" onClick={tools.onRemap} style={{ width: "100%", marginTop: 6, padding: "6px 8px" }}>Use this design for another doctype</button>}
           </Sec>
           <div className="sdiv" />
           <Sec title="Fields">
