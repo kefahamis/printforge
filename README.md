@@ -46,10 +46,17 @@ site before relying on it:
    Print Format's margin fields for newer PDF generators.
 4. In the builder, open Preview, enter a real document name and press Render. That
    runs the unsaved design through the site's own print pipeline.
+5. If you use a repeating header or footer, print a document long enough to reach a
+   second page and check the header does not overlap the content. The margins are
+   sized from how Frappe lays out its header and footer pages, which could only be
+   read from its source here, not run.
+6. If you make a report format, pick it in the report's Print dialog and check the
+   rows and totals.
 
 ## Using it
 
-1. **New** — type any doctype on the site and load its fields, or start from a preset.
+1. **New** — type any doctype on the site and load its fields, pick a report, or
+   start from a preset.
 2. Design the page. Set paper, margins and letter head in the Page panel (shown when
    nothing is selected).
 3. **Preview** fills it with sample data; enter a document name there to render a
@@ -70,6 +77,10 @@ PrintForge. Use a different name in that case.
 - **Letter head.** Off by default: the design prints as drawn. Turn on *Use the site's
   letter head and footer* in the Page panel to add them the way a standard format does,
   including page numbers when *Repeat Header and Footer* is on in Print Settings.
+- **Repeating header and footer.** Select a top-level element on the first page and
+  choose *Repeat as the page header* (or footer). It is printed in the margin of every
+  page, the margin grows to fit it, and it takes the place of the site's letter head
+  there. *Page numbers at the bottom of every page* is a separate Page-panel option.
 - **Paper.** Paper size, orientation and margins are set in the Page panel.
 - **Font.** The page is drawn in the site's print font (Print Settings), and published
   formats inherit it.
@@ -78,8 +89,21 @@ PrintForge. Use a different name in that case.
 - **Print Format form.** Formats made here get an *Edit in PrintForge* button. Editing
   their HTML by hand is overwritten on the next publish.
 
-Not covered: print formats for Reports, and repeating a header you designed yourself
-on every page (only the site letter head repeats).
+### Report formats
+
+Pick a report in **New** to design a print format for it. The format then appears in
+that report's Print dialog. Frappe fills report formats in the browser rather than on
+the server, so a few things differ from document formats:
+
+- The table lists the report's rows, one column per report column, formatted the way
+  the report grid formats them. Total rows are bold.
+- Text can use `{{ title }}`, `{{ filters.from_date }}` and the like. `doc` does not
+  exist in a report.
+- Letter head comes from the report's own Print dialog; the repeat, page-number and
+  company-logo options do not apply.
+- There is no live preview. Publish, then print the report.
+- Columns can only be loaded automatically for reports that run without filters. For
+  the rest, type the column names into the field list.
 
 ## Updating
 
@@ -97,7 +121,8 @@ Requires Node 18 or newer.
 ```bash
 npm install
 npm run dev              # standalone, http://localhost:5173
-npm test                 # exporter tests
+npm test                 # exporter, design-tree and editor tests
+npm run lint
 npm run build:frappe     # rebuild printforge/public/dist/
 ```
 
@@ -111,9 +136,14 @@ and the site list in History only appear when the builder is opened through Frap
 
 | Path | What it is |
 | --- | --- |
-| `src/App.jsx` | The builder (React) |
-| `src/exporter.js` | Design → Print Format HTML/Jinja; tested in `exporter.test.js` |
-| `printforge/api.py` | Site API: publish, preview with a document, open designs, doctypes and fields |
+| `src/App.jsx` | The editor shell: state, toolbar, canvas, publishing |
+| `src/components/` | Canvas elements, side panels, dialogs, form controls |
+| `src/tree.js` | Design-tree operations, element defaults, starter designs |
+| `src/exporter.js` | Design → Print Format HTML (Jinja, or Frappe's browser templates for reports) |
+| `src/frappe.js` | Calls to the site API |
+| `src/styles.js`, `src/doctypes.js` | Editor stylesheet; preset doctype list |
+| `src/*.test.js(x)` | Tests |
+| `printforge/api.py` | Site API: publish, preview with a document, open designs, doctypes, reports and fields |
 | `printforge/public/js/print_format.js` | *Edit in PrintForge* button on the Print Format form |
 | `printforge/install.py` | Creates the `printforge_design` custom field |
 | `printforge/www/printforge.*` | The full-screen builder page at `/printforge` |

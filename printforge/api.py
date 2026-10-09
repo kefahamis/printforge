@@ -55,6 +55,50 @@ def get_doctype_fields(doctype):
 
 
 @frappe.whitelist()
+def list_reports():
+	"""Reports a print format can be made for."""
+	_check_permission()
+	return frappe.get_all("Report", filters={"disabled": 0}, pluck="name", order_by="name asc", limit_page_length=0)
+
+
+@frappe.whitelist()
+def get_report_columns(report):
+	"""Columns of a report in the shape the builder's field list uses.
+
+	Columns are only known once a report has run, so this runs it without filters. Reports
+	that need filters fail that run; the list then comes back empty and columns are typed in.
+	"""
+	from frappe.desk.query_report import get_report_doc, run
+
+	_check_permission()
+	if not report or not frappe.db.exists("Report", report):
+		frappe.throw(_("Report {0} does not exist on this site.").format(report or ""), frappe.DoesNotExistError)
+	get_report_doc(report)  # enforces the report's own permissions
+
+	try:
+		columns = run(report, filters={}, ignore_prepared_report=True).get("columns") or []
+	except Exception:
+		frappe.clear_messages()
+		columns = []
+
+	fields = []
+	for col in columns:
+		if isinstance(col, str):
+			label = col.split(":")[0]
+			col = {"label": label, "fieldname": frappe.scrub(label), "fieldtype": (col.split(":") + ["Data"])[1].split("/")[0]}
+		if col.get("fieldname"):
+			fields.append(
+				{
+					"name": col.get("fieldname"),
+					"label": col.get("label") or col.get("fieldname"),
+					"isChild": False,
+					"fieldtype": col.get("fieldtype") or "Data",
+				}
+			)
+	return fields
+
+
+@frappe.whitelist()
 def recent_docs(doctype):
 	"""Names of recently changed documents the user can read, to pick one for a preview."""
 	_check_permission()
@@ -101,10 +145,13 @@ def preview(doctype, docname, html):
 def list_designs():
 	"""Print Formats that were published from the builder."""
 	_check_permission()
+	fields = ["name", "doc_type", "modified"]
+	if frappe.get_meta("Print Format").has_field("report"):
+		fields.append("report")
 	return frappe.get_all(
 		"Print Format",
 		filters={DESIGN_FIELD: ["is", "set"]},
-		fields=["name", "doc_type", "modified"],
+		fields=fields,
 		order_by="modified desc",
 	)
 
@@ -148,10 +195,21 @@ def _store_embedded_images(*texts):
 
 
 @frappe.whitelist(methods=["POST"])
-def publish(print_format, doctype, html, design, make_default=0, margin_mm=None):
-	"""Create or update a custom Jinja Print Format from a builder design."""
+def publish(print_format, doctype, html, design, make_default=0, margin_mm=None, print_for="DocType"):
+	"""Create or update a custom Print Format from a builder design.
+
+	`doctype` is the document type the format prints or, when `print_for` is "Report", the
+	name of the report.
+	"""
 	_check_permission()
-	_check_doctype(doctype)
+	for_report = print_for == "Report"
+	if for_report:
+		if not frappe.get_meta("Print Format").has_field("print_format_for"):
+			frappe.throw(_("This version of Frappe has no print formats for reports."))
+		if not doctype or not frappe.db.exists("Report", doctype):
+			frappe.throw(_("Report {0} does not exist on this site.").format(doctype or ""), frappe.DoesNotExistError)
+	else:
+		_check_doctype(doctype)
 
 	print_format = (print_format or "").strip()
 	if not print_format:
@@ -182,15 +240,21 @@ def publish(print_format, doctype, html, design, make_default=0, margin_mm=None)
 
 	doc.update(
 		{
-			"doc_type": doctype,
 			"standard": "No",
 			"custom_format": 1,
-			"print_format_type": "Jinja",
 			"disabled": 0,
 			"html": html,
 			DESIGN_FIELD: design,
 		}
 	)
+	if for_report:
+		# Report formats are rendered in the browser by Frappe's own template engine, so
+		# the HTML is not Jinja and must not be validated as such.
+		doc.update({"print_format_for": "Report", "report": doctype, "doc_type": None, "print_format_type": "JS"})
+	else:
+		doc.update({"doc_type": doctype, "print_format_type": "Jinja"})
+		if doc.meta.has_field("print_format_for"):
+			doc.update({"print_format_for": "DocType", "report": None})
 	# wkhtmltopdf takes its margins from the CSS in the HTML; these fields are what the
 	# Print Format form shows and what newer PDF generators read.
 	if margin_mm is not None:
@@ -203,7 +267,7 @@ def publish(print_format, doctype, html, design, make_default=0, margin_mm=None)
 	else:
 		doc.save()
 
-	is_default = bool(cint(make_default))
+	is_default = bool(cint(make_default)) and not for_report
 	if is_default:
 		from frappe.printing.doctype.print_format.print_format import make_default as set_default
 

@@ -31,7 +31,7 @@ describe('page setup', () => {
     expect(html).toContain('.print-format { margin-left: 10.6mm; margin-right: 10.6mm; margin-top: 10.6mm; margin-bottom: 10.6mm; }')
     // the same margins must not also apply as CSS in the page body
     expect(html).toContain('@media print { .print-format { margin: 0 !important; padding: 0 !important; } }')
-    expect(html).toContain('.pf-page { position: relative; width: 714px;')
+    expect(html).toContain('.pf-page, .pf-rep { position: relative; width: 714px;')
   })
   it('adds paper size and orientation only when they differ from A4 portrait', () => {
     const html = toPrintFormatHtml(tree([text("a", "hi")], ["a"], { settings: { pageSize: "Letter", orientation: "Landscape" } }))
@@ -97,5 +97,50 @@ describe('standalone file', () => {
     expect(html.startsWith('<!DOCTYPE html>')).toBe(true)
     expect(html).toContain('<div class="print-format">')
     expect(html).toContain('@media print { .print-format { padding: 40px !important; } }')
+  })
+})
+
+describe('repeating header and footer', () => {
+  const t = (extra = {}) => tree([text("h", "Header", { h: 40, repeat: "header" }), text("b", "Body"), text("f", "Footer", { h: 20, repeat: "footer" })], ["h", "b", "f"], extra)
+  it('moves marked elements into the blocks Frappe repeats on every page', () => {
+    const html = toPrintFormatHtml(t())
+    const header = html.slice(html.indexOf('<div id="header-html">'), html.indexOf('<div class="pf-page"'))
+    expect(header).toContain('>Header</div>')
+    const page = html.slice(html.indexOf('<div class="pf-page"'), html.indexOf('<div id="footer-html">'))
+    expect(page).toContain('>Body</div>')
+    expect(page).not.toContain('>Header</div>')
+    expect(html.slice(html.indexOf('<div id="footer-html">'))).toContain('>Footer</div>')
+  })
+  it('grows the page margins to make room, preferring measured heights', () => {
+    // top: 40px margin + 40px header = 21.2mm, plus Frappe's 5mm below the header
+    expect(toPrintFormatHtml(t())).toContain('margin-top: 26.2mm; margin-bottom: 17.9mm;')
+    expect(toPrintFormatHtml(t(), { heights: { h: 80 } })).toContain('margin-top: 36.8mm;')
+  })
+  it('replaces the site letter head rather than stacking with it', () => {
+    const html = toPrintFormatHtml(t({ settings: { letterHead: true } }))
+    expect(html).not.toContain('letter_head')
+    expect(html).not.toContain('letter-head-footer')
+  })
+  it('adds page numbers on their own when asked', () => {
+    const html = toPrintFormatHtml(tree([text("a", "hi")], ["a"], { settings: { pageNumbers: true } }))
+    expect(html).toContain('<div id="footer-html">')
+    expect(html).toContain('<span class="topage"></span>')
+  })
+})
+
+describe('report formats', () => {
+  const tbl = { id: "t", type: "table", children: [], w: "100%", h: 100, columns: [{ id: "c1", label: "Account", field: "account", align: "left", width: "60%" }, { id: "c2", label: "Balance", field: "balance", align: "right", width: "40%" }], headerBg: "#eee", headerColor: "#111", rowBg: "#fff", rowAltBg: "#f7f7f7", rowColor: "#222", borderColor: "#ccc", fontSize: 12, footerRows: [] }
+  const html = toPrintFormatHtml(tree([text("x", "{{ title }} {{ doc.grand_total }}", { repeat: "header" }), tbl], ["x", "t"], { settings: { printFor: "Report", letterHead: true } }))
+  it('loops over the report rows with the syntax Frappe renders in the browser', () => {
+    expect(html).toContain('{% for row in data %}')
+    expect(html).toContain('frappe.format(row["balance"]')
+    expect(html).toContain('row._index % 2 == 0 ? "#fff" : "#f7f7f7"')
+    expect(html).not.toContain('loop.index0')
+  })
+  it('leaves text as typed and uses no server-side blocks', () => {
+    expect(html).toContain('{{ title }} {{ doc.grand_total }}')
+    expect(html).not.toContain('get_formatted')
+    expect(html).not.toContain('id="header-html"')
+    expect(html).not.toContain('letter_head')
   })
 })
