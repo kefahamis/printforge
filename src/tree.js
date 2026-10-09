@@ -329,3 +329,173 @@ export function buildSampleInvoiceTree() {
   return treeOf([hdr, info, tbl, words, served, terms],
     [hdr, logo, side, title, company, address, info, billTo, billHead, billName, billAddr, meta, ...rows.flat(), tbl, words, served, terms]);
 }
+
+// ── More starting points ──────────────────────────────────────────────────────
+// Label / value rows used by the purchase order: two pairs per row.
+const kvRow = (l1, v1, l2, v2, alt) => {
+  const row = { ...mkC(0, 0), ...PLAIN, layout: "grid", gridCols: "1fr 1.5fr 1fr 1.5fr", colGap: 0, rowGap: 0, w: "100%", h: 22, fill: alt ? "#f6f7f9" : "#ffffff", _flow: true };
+  const cell = (content, o) => flowText(content, { h: 22, fontSize: 9, padding: "5px 8px", lineHeight: 1.4, ...o });
+  const cells = [cell(l1, { color: "#666666", fontWeight: "600" }), cell(v1), cell(l2, { color: "#666666", fontWeight: "600" }), cell(v2)];
+  row.children = cells.map(c => c.id);
+  return [row, ...cells];
+};
+const kvBlock = (rows, border) => {
+  const block = { ...mkC(0, 0), ...COL, gap: 0, w: "100%", h: rows.length * 22, stroke: border, strokeWidth: 1, _flow: false };
+  const built = rows.map((r, i) => kvRow(...r, i % 2 === 1));
+  block.children = built.map(b => b[0].id);
+  return [block, ...built.flat()];
+};
+const signature = (caption) => {
+  const box = { ...mkC(0, 0), ...COL, w: 220, h: 50, gap: 4, _flow: true };
+  const line = { ...mkL(0, 0), w: 220, color: "#999999", margin: "32px 0 0 0", _flow: true };
+  const text = flowText(caption, { h: 14, fontSize: 9, color: "#666666" });
+  box.children = [line.id, text.id];
+  return [box, line, text];
+};
+
+export function buildPurchaseOrderTree() {
+  const blue = "#266491", border = "#cccccc";
+  const section = (title, o = {}) => flowText(title, { h: 30, fontSize: 10, fontWeight: "700", color: blue, padding: "14px 0 6px 0", _flow: false, ...o });
+  const table = (o) => ({ ...mkTbl(0, 0), w: "100%", h: 80, headerBg: blue, headerColor: "#ffffff", headerFontSize: 9, fontSize: 9, borderColor: border, ...o });
+  const col = (label, field, align, width) => ({ id: uid(), label, field, align, width });
+
+  const hdr = { ...mkC(0, 0), ...ROW, w: "100%", h: 44, alignItems: "flex-end", padding: "0 0 8px 0" };
+  const company = flowText("{{ doc.company }}", { w: 440, h: 26, fontSize: 17, fontWeight: "700", color: blue });
+  const title = flowText("PURCHASE ORDER", { w: 270, h: 22, fontSize: 14, fontWeight: "700", color: "#666666", align: "right" });
+  hdr.children = [company.id, title.id];
+  const rule = { ...mkL(0, 0), color: blue, thickness: 2, w: "100%" };
+  const ref = flowText("PO no. {{ doc.name }}   ·   Date {{ doc.transaction_date }}   ·   Status {{ doc.status }}", { h: 26, fontSize: 9, color: "#666666", align: "center", padding: "8px 0 0 0", _flow: false });
+
+  const parties = kvBlock([
+    ["Company", "{{ doc.company }}", "Supplier", "{{ doc.supplier_name }}"],
+    ["Bill to", "{{ doc.billing_address_display }}", "Supplier address", "{{ doc.address_display }}"],
+    ["Ship to", "{{ doc.shipping_address_display }}", "Contact", "{{ doc.contact_display }}"],
+  ], border);
+  const order = kvBlock([
+    ["Order date", "{{ doc.transaction_date }}", "Required by", "{{ doc.schedule_date }}"],
+    ["Currency", "{{ doc.currency }}", "Price list", "{{ doc.buying_price_list }}"],
+    ["Payment terms", "{{ doc.payment_terms_template }}", "Deliver to warehouse", "{{ doc.set_warehouse }}"],
+  ], border);
+
+  const items = table({
+    h: 104, childField: "items", columns: [
+      col("No.", "idx", "left", "6%"), col("Item", "item_name", "left", "40%"), col("Qty", "qty", "right", "10%"),
+      col("UOM", "uom", "left", "10%"), col("Rate", "rate", "right", "16%"), col("Amount", "amount", "right", "18%"),
+    ]
+  });
+  const taxes = table({
+    showIf: "doc.taxes", childField: "taxes", columns: [
+      col("Tax or charge", "description", "left", "50%"), col("Rate", "rate", "right", "14%"),
+      col("Amount", "tax_amount", "right", "18%"), col("Running total", "total", "right", "18%"),
+    ]
+  });
+
+  const totals = { ...mkC(0, 0), ...ROW, w: "100%", h: 90, justifyContent: "flex-end", padding: "12px 0 0 0" };
+  const sums = { ...mkC(0, 0), ...COL, w: 320, h: 78, gap: 4, _flow: true };
+  const sumRow = (label, value, strong) => {
+    const r = { ...mkC(0, 0), ...ROW, w: "100%", h: strong ? 20 : 16, _flow: true };
+    const l = flowText(label, { w: 150, h: strong ? 20 : 16, fontSize: strong ? 12 : 10, fontWeight: strong ? "700" : "400", color: strong ? "#111111" : "#555555" });
+    const v = flowText(value, { w: 168, h: strong ? 20 : 16, fontSize: strong ? 12 : 10, fontWeight: strong ? "700" : "400", align: "right" });
+    r.children = [l.id, v.id];
+    return [r, l, v];
+  };
+  const sumRows = [sumRow("Total quantity", "{{ doc.total_qty }}"), sumRow("Net total", "{{ doc.net_total }}"), sumRow("Taxes and charges", "{{ doc.total_taxes_and_charges }}"), sumRow("Grand total", "{{ doc.grand_total }}", true)];
+  sums.children = sumRows.map(r => r[0].id);
+  totals.children = [sums.id];
+  const words = flowText("In words: {{ doc.in_words }}", { h: 26, fontSize: 9, italic: true, align: "right", padding: "6px 0 0 0", _flow: false });
+
+  const schedule = table({
+    showIf: "doc.payment_schedule", childField: "payment_schedule", columns: [
+      col("Due date", "due_date", "left", "30%"), col("Description", "description", "left", "34%"),
+      col("Portion %", "invoice_portion", "right", "16%"), col("Amount", "payment_amount", "right", "20%"),
+    ]
+  });
+  const terms = flowText("{{ doc.terms }}", { h: 30, fontSize: 9, color: "#333333", showIf: "doc.terms", _flow: false });
+
+  const signs = { ...mkC(0, 0), ...ROW, w: "100%", h: 70, padding: "20px 0 0 0" };
+  const prepared = signature("Prepared by"), authorised = signature("Authorised signatory");
+  signs.children = [prepared[0].id, authorised[0].id];
+
+  const s1 = section("Supplier and company"), s2 = section("Order details"), s3 = section("Items");
+  const s4 = section("Taxes and charges", { showIf: "doc.taxes" }), s5 = section("Payment schedule", { showIf: "doc.payment_schedule" });
+  const s6 = section("Terms and conditions", { showIf: "doc.terms" });
+
+  return treeOf(
+    [hdr, rule, ref, s1, parties[0], s2, order[0], s3, items, s4, taxes, totals, words, s5, schedule, s6, terms, signs],
+    [hdr, company, title, rule, ref, s1, ...parties, s2, ...order, s3, items, s4, taxes, totals, sums, ...sumRows.flat(), words, s5, schedule, s6, terms, signs, ...prepared, ...authorised]);
+}
+
+export function buildDeliveryNoteTree() {
+  const hdr = { ...mkC(0, 0), ...ROW, w: "100%", h: 76, padding: "0 0 20px 0" };
+  const logo = { ...mkI(0, 0), w: 130, h: 56, _flow: true };
+  const co = flowText("{{ doc.company }}<br>{{ doc.company_address_display }}", { w: 330, h: 34, color: "#333333", lineHeight: 1.5, padding: "0 0 0 16px" });
+  const title = flowText("DELIVERY NOTE<br>{{ doc.name }}", { w: 252, h: 48, fontSize: 18, fontWeight: "700", align: "right", lineHeight: 1.3 });
+  hdr.children = [logo.id, co.id, title.id];
+  const rule = { ...mkL(0, 0), color: "#111111", thickness: 1, w: "100%" };
+
+  const info = { ...mkC(0, 0), ...PLAIN, w: "100%", h: 100, layout: "grid", gridCols: "1fr 1fr", colGap: 0, rowGap: 0, padding: "16px 0" };
+  const to = { ...mkC(0, 0), ...COL, w: "100%", h: 68, _flow: true };
+  const toLabel = flowText("Deliver to", { h: 14, fontSize: 9, color: "#666666" });
+  const toName = flowText("{{ doc.customer_name }}", { h: 20, fontSize: 13, fontWeight: "600" });
+  const toAddr = flowText("{{ doc.shipping_address }}", { h: 30, color: "#333333", lineHeight: 1.5 });
+  to.children = [toLabel.id, toName.id, toAddr.id];
+  const meta = { ...mkC(0, 0), ...COL, w: "100%", h: 68, _flow: true };
+  const metaLine = (label, value) => [flowText(label, { h: 14, fontSize: 9, color: "#666666", align: "right" }), flowText(value, { h: 18, fontSize: 12, align: "right" })];
+  const metaLines = [metaLine("Date", "{{ doc.posting_date }}"), metaLine("Customer order no.", "{{ doc.po_no }}")];
+  meta.children = metaLines.flat().map(n => n.id);
+  info.children = [to.id, meta.id];
+
+  const tbl = {
+    ...mkTbl(0, 0), w: "100%", h: 110, columns: [
+      { id: uid(), label: "No.", field: "idx", align: "left", width: "8%" },
+      { id: uid(), label: "Item", field: "item_name", align: "left", width: "56%" },
+      { id: uid(), label: "Quantity", field: "qty", align: "right", width: "18%" },
+      { id: uid(), label: "UOM", field: "uom", align: "left", width: "18%" },
+    ],
+    footerRows: [{ label: "Total quantity", expr: "doc.total_qty" }]
+  };
+
+  const signs = { ...mkC(0, 0), ...ROW, w: "100%", h: 90, padding: "36px 0 0 0" };
+  const delivered = signature("Delivered by"), received = signature("Received by (name, signature, date)");
+  signs.children = [delivered[0].id, received[0].id];
+  const note = flowText("Check the items on delivery. A signed copy confirms they were received in good order.", { h: 30, fontSize: 9, color: "#555555", padding: "16px 0 0 0", _flow: false });
+
+  return treeOf([hdr, rule, info, tbl, signs, note],
+    [hdr, logo, co, title, rule, info, to, toLabel, toName, toAddr, meta, ...metaLines.flat(), tbl, signs, ...delivered, ...received, note]);
+}
+
+// ── Template gallery ──────────────────────────────────────────────────────────
+// Each entry builds a design and names the doctype and fields it reads, so a new design
+// starts with a field list that matches it.
+const f = (name, label, isChild = false) => ({ name, label, ...(isChild ? { isChild: true } : {}) });
+const INVOICE_FIELDS = [
+  f("name", "Invoice no."), f("customer_name", "Customer"), f("address_display", "Customer address"),
+  f("posting_date", "Date"), f("due_date", "Due date"), f("currency", "Currency"),
+  f("net_total", "Net total"), f("total_taxes_and_charges", "Taxes"), f("grand_total", "Grand total"), f("in_words", "In words"),
+  f("company", "Company"), f("company_address_display", "Company address"),
+  f("items", "Items", true), f("taxes", "Taxes", true),
+];
+const PO_FIELDS = [
+  f("name", "PO no."), f("supplier", "Supplier"), f("supplier_name", "Supplier name"), f("address_display", "Supplier address"),
+  f("contact_display", "Contact"), f("billing_address_display", "Billing address"), f("shipping_address_display", "Shipping address"),
+  f("transaction_date", "Order date"), f("schedule_date", "Required by"), f("status", "Status"),
+  f("currency", "Currency"), f("buying_price_list", "Price list"), f("payment_terms_template", "Payment terms"), f("set_warehouse", "Warehouse"),
+  f("total_qty", "Total quantity"), f("net_total", "Net total"), f("total_taxes_and_charges", "Taxes and charges"),
+  f("grand_total", "Grand total"), f("rounded_total", "Rounded total"), f("in_words", "In words"), f("terms", "Terms"),
+  f("company", "Company"),
+  f("items", "Items", true), f("taxes", "Taxes", true), f("payment_schedule", "Payment schedule", true),
+];
+const DELIVERY_FIELDS = [
+  f("name", "Delivery note no."), f("customer", "Customer"), f("customer_name", "Customer name"), f("shipping_address", "Shipping address"),
+  f("posting_date", "Date"), f("po_no", "Customer order no."), f("total_qty", "Total quantity"),
+  f("company", "Company"), f("company_address_display", "Company address"),
+  f("items", "Items", true),
+];
+
+export const TEMPLATES = [
+  { id: "invoice", label: "Sales Invoice", group: "Selling", doctype: "Sales Invoice", desc: "Plain black-on-white invoice with a totals block.", build: buildTree, docFields: INVOICE_FIELDS },
+  { id: "invoice-boxed", label: "Sales Invoice, boxed", group: "Selling", doctype: "Sales Invoice", desc: "Coloured headings, a boxed reference panel and a terms banner.", build: buildSampleInvoiceTree, docFields: INVOICE_FIELDS },
+  { id: "po", label: "Purchase Order", group: "Buying", doctype: "Purchase Order", desc: "Supplier and order details, items, taxes, payment schedule, terms and signatures.", build: buildPurchaseOrderTree, docFields: PO_FIELDS },
+  { id: "delivery", label: "Delivery Note", group: "Stock", doctype: "Delivery Note", desc: "Packing list with a total quantity and signature blocks.", build: buildDeliveryNoteTree, docFields: DELIVERY_FIELDS },
+  { id: "blank", label: "Blank page", group: "", doctype: "Sales Invoice", desc: "Start from nothing.", build: () => treeOf([], []), docFields: INVOICE_FIELDS },
+];

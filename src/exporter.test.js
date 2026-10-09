@@ -177,3 +177,10 @@ describe('pageContentHeight', () => {
     expect(pageContentHeight(withHeader)).toBeLessThan(1043 - 40)
   })
 })
+
+describe('elements pinned by the Move tool', () => {
+  it('are placed from the printed page box, which starts inside the margins', () => {
+    const html = toPrintFormatHtml(tree([text("a", "hi", { _free: true, x: 140, y: 240, w: 100 })], ["a"]))
+    expect(html).toContain('position:absolute;left:100px;top:200px;width:100px;')
+  })
+})

@@ -1,12 +1,14 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { PAGE_SIZES, FONTS, getSettings, marginMm } from '../exporter.js';
-import { uid, dc, findParent, getDepth, mkT, mkC, mkI } from '../tree.js';
+import { uid, dc, findParent, getDepth, isDesc, mkT, mkC, mkI } from '../tree.js';
 import { FRAPPE, frappeCall } from '../frappe.js';
 import { Num, Txt, RichTextEditor, Sel, CRow, Sec, Sdiv } from './atoms.jsx';
 
 // ── Layer tree ────────────────────────────────────────────────────────────────
-export function LayerTree({ tree, selected, onSelect, depth, ids }) {
+export function LayerTree({ tree, selected, onSelect, onDrop, depth, ids }) {
   const [collapsed, setCollapsed] = useState({});
+  const [dragOver, setDragOver] = useState(null);
+  const canContain = type => ["container", "rect", "circle", "triangle"].includes(type);
   const toggle = (id, e) => { e.stopPropagation(); setCollapsed(prev => ({ ...prev, [id]: !prev[id] })); };
 
   const icons = {
@@ -30,7 +32,7 @@ export function LayerTree({ tree, selected, onSelect, depth, ids }) {
               <span style={{ fontSize: 10, color: "var(--ac)", width: 16, display: "flex", alignItems: "center", marginRight: 2 }}>{icons.page}</span>
               <span style={{ fontSize: 11, fontWeight: 700, color: "var(--t0)", flex: 1 }}>{page.name}</span>
             </div>
-            <LayerTree tree={tree} selected={selected} onSelect={onSelect} depth={1} ids={page.roots} />
+            <LayerTree tree={tree} selected={selected} onSelect={onSelect} onDrop={onDrop} depth={1} ids={page.roots} />
           </div>
         ))}
       </div>
@@ -42,7 +44,8 @@ export function LayerTree({ tree, selected, onSelect, depth, ids }) {
       {ids.map(id => {
         const el = tree.nodes[id]; if (!el) return null;
         const isSel = selected === id;
-        const hasKids = el.type === "container" && (el.children || []).length > 0;
+        const hasKids = canContain(el.type) && (el.children || []).length > 0;
+        const isDropTarget = dragOver === id && canContain(el.type);
         const isCollapsed = collapsed[id];
         const color = dc(depth);
 
@@ -55,7 +58,17 @@ export function LayerTree({ tree, selected, onSelect, depth, ids }) {
 
         return (
           <div key={id}>
-            <div className={"li" + (isSel ? " sel" : "")} onClick={() => onSelect(id)} style={{ paddingLeft: depth * 14 + 10, position: "relative" }}>
+            <div className={"li" + (isSel ? " sel" : "")} onClick={() => onSelect(id)} style={{ paddingLeft: depth * 14 + 10, position: "relative", ...(isDropTarget ? { background: "var(--ad)", outline: "1px solid var(--ac)" } : {}) }}
+              draggable={!!onDrop}
+              onDragStart={e => { e.dataTransfer.setData("text/plain", id); e.dataTransfer.effectAllowed = "move"; e.stopPropagation(); }}
+              onDragOver={e => { if (!onDrop || !canContain(el.type)) return; e.preventDefault(); e.stopPropagation(); setDragOver(id); }}
+              onDragLeave={() => setDragOver(null)}
+              onDrop={e => {
+                e.preventDefault(); e.stopPropagation(); setDragOver(null);
+                if (!onDrop || !canContain(el.type)) return;
+                const movedId = e.dataTransfer.getData("text/plain");
+                if (movedId && movedId !== id && !isDesc(tree.nodes, movedId, id)) onDrop(movedId, id);
+              }}>
               {depth > 0 && <div style={{ position: "absolute", left: (depth - 1) * 14 + 16, top: 0, bottom: 0, width: 1, background: "var(--bd)", opacity: .3 }} />}
               <div style={{ width: 14, height: 14, display: "flex", alignItems: "center", justifyContent: "center", marginRight: 6, cursor: "pointer", opacity: hasKids ? 0.6 : 0 }} onClick={e => toggle(id, e)}>
                 <svg width="6" height="6" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="4" style={{ transform: isCollapsed ? "rotate(-90deg)" : "none", transition: "transform .15s" }}><polyline points="6 9 12 15 18 9" /></svg>
@@ -66,7 +79,7 @@ export function LayerTree({ tree, selected, onSelect, depth, ids }) {
               </span>
               {el.mode === "flow" && <span style={{ fontSize: 7, padding: "1px 3px", background: "var(--ad)", color: "var(--ac)", borderRadius: 2, flexShrink: 0, opacity: .7, marginLeft: 4 }}>{el.layout}</span>}
             </div>
-            {hasKids && !isCollapsed && <LayerTree tree={tree} selected={selected} onSelect={onSelect} depth={depth + 1} ids={el.children} />}
+            {hasKids && !isCollapsed && <LayerTree tree={tree} selected={selected} onSelect={onSelect} onDrop={onDrop} depth={depth + 1} ids={el.children} />}
           </div>
         );
       })}
@@ -514,8 +527,30 @@ export const COMPONENT_TEMPLATES = [
   }
 ];
 
-export function LeftPanel({ onAdd, onAddTemplate, doctype, setDoctype, docFields, setDocFields, tree, selected, onSelect, penMode, setPenMode, assets, setAssets, onSetTrace }) {
+// Bill-to and ship-to side by side
+COMPONENT_TEMPLATES.push({
+  label: "Address Row",
+  icon: "⌂",
+  create: () => {
+    const plain = { fill: "transparent", stroke: "transparent", strokeWidth: 0, borderRadius: 0, padding: 0 };
+    const text = (content, o = {}) => ({ ...mkT(0, 0), content, w: "100%", h: 16, fontSize: 11, color: "#111111", padding: 0, _flow: true, ...o });
+    const side = (label, name, address) => {
+      const box = { ...mkC(0, 0), ...plain, layout: "flex", flexDir: "column", flexWrap: "nowrap", gap: 2, w: "100%", h: 68, _flow: true };
+      const parts = [text(label, { h: 14, fontSize: 9, color: "#666666" }), text(name, { h: 20, fontSize: 13, fontWeight: "600" }), text(address, { h: 30, color: "#333333" })];
+      box.children = parts.map(p => p.id);
+      return [box, ...parts];
+    };
+    const row = { ...mkC(0, 0), ...plain, w: "100%", h: 100, layout: "grid", gridCols: "1fr 1fr", colGap: 24, rowGap: 0, padding: "16px 0", mode: "flow" };
+    const bill = side("Bill to", "{{ doc.customer_name }}", "{{ doc.address_display }}");
+    const ship = side("Ship to", "{{ doc.shipping_address_name }}", "{{ doc.shipping_address }}");
+    row.children = [bill[0].id, ship[0].id];
+    return [row, ...bill, ...ship];
+  }
+});
+
+export function LeftPanel({ onAdd, onAddTemplate, doctype, setDoctype, docFields, setDocFields, tree, selected, onSelect, penMode, setPenMode, assets, setAssets, onSetTrace, onDrop, openTab }) {
   const [tab, setTab] = useState("insert");
+  useEffect(() => { if (openTab?.tab) setTab(openTab.tab); }, [openTab]);
   const [nf, setNf] = useState({ name: "", label: "", isChild: false });
   const [siteFields, setSiteFields] = useState(null); // null | "loading" | { ok, msg }
   const loadSiteFields = async () => {
@@ -586,7 +621,8 @@ export function LeftPanel({ onAdd, onAddTemplate, doctype, setDoctype, docFields
             <div style={{ flex: 1 }} />
             <span style={{ fontSize: 9, color: "var(--t2)", opacity: .6 }}>{Object.keys(tree.nodes).length}</span>
           </div>
-          <LayerTree tree={tree} selected={selected} onSelect={onSelect} depth={0} />
+          <p style={{ fontSize: 10, color: "var(--t2)", padding: "0 12px 6px" }}>Drag an element onto a container to move it inside.</p>
+          <LayerTree tree={tree} selected={selected} onSelect={onSelect} onDrop={onDrop} depth={0} />
         </div>}
         {tab === "assets" && <div style={{ padding: 12 }}>
           <div className="sl" style={{ marginBottom: 8 }}>Images</div>

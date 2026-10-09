@@ -1,7 +1,8 @@
 import { DOC_FONT } from './exporter.js';
 import { FRAPPE } from './frappe.js';
 
-export function injectStyles(theme = "dark", page = { w: 794, h: 1123 }) {
+export function injectStyles(theme = "dark", page = { w: 794, h: 1123 }, density = "comfortable") {
+  const compact = density === "compact";
   const isDark = theme === "dark";
   const s0 = isDark ? {
     b0: "#111111", b1: "#191919", b2: "#1f1f1f", b3: "#272727", b4: "#313131",
@@ -23,7 +24,7 @@ export function injectStyles(theme = "dark", page = { w: 794, h: 1123 }) {
 
   const rules = [
     "*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}",
-    `:root{--b0:${s0.b0};--b1:${s0.b1};--b2:${s0.b2};--b3:${s0.b3};--b4:${s0.b4};--bd:${s0.bd};--bm:${s0.bm};--bh:${s0.bh};--t0:${s0.t0};--t1:${s0.t1};--t2:${s0.t2};--ac:${s0.ac};--ad:${s0.ad};--gn:#2f9e5b;--rd:#d9484d;--r4:4px;--r6:6px;--sans:system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;--mono:ui-monospace,'Cascadia Mono',Consolas,Menlo,monospace}`,
+    `:root{--b0:${s0.b0};--b1:${s0.b1};--b2:${s0.b2};--b3:${s0.b3};--b4:${s0.b4};--bd:${s0.bd};--bm:${s0.bm};--bh:${s0.bh};--t0:${s0.t0};--t1:${s0.t1};--t2:${s0.t2};--ac:${s0.ac};--ad:${s0.ad};--gn:#2f9e5b;--rd:#d9484d;--r4:4px;--r6:6px;--ctl:${compact ? "3px 8px" : "6px 10px"};--row:${compact ? "2px 8px" : "5px 8px"};--sans:system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;--mono:ui-monospace,'Cascadia Mono',Consolas,Menlo,monospace}`,
     "body{background:var(--b0);font-family:var(--sans);color:var(--t0);overflow:hidden}",
     "button{font-family:inherit}",
     // The page uses the site's print font so line breaks match the printed document
@@ -33,7 +34,7 @@ export function injectStyles(theme = "dark", page = { w: 794, h: 1123 }) {
     "::-webkit-scrollbar-track{background:transparent}",
     "::-webkit-scrollbar-thumb{background:var(--b4)}",
     "::-webkit-scrollbar-thumb:hover{background:var(--bh)}",
-    ".pi{width:100%;padding:6px 10px;background:var(--b0);border:1px solid var(--bm);border-radius:var(--r4);color:var(--t0);font-size:11px;outline:none}",
+    ".pi{width:100%;padding:var(--ctl);background:var(--b0);border:1px solid var(--bm);border-radius:var(--r4);color:var(--t0);font-size:11px;outline:none}",
     ".pi:focus{border-color:var(--ac)}",
     ".pi::placeholder{color:var(--t2);opacity:.6}",
     ".mono{font-family:var(--mono)}",
@@ -50,7 +51,7 @@ export function injectStyles(theme = "dark", page = { w: 794, h: 1123 }) {
     ".tab:hover{color:var(--t1)}",
     ".tab.on{color:var(--t0);border-bottom-color:var(--ac)}",
     ".sl{font-size:11px;font-weight:600;color:var(--t1);margin-bottom:6px}",
-    ".sdiv{height:1px;background:var(--bd);margin:12px -12px}",
+    `.sdiv{height:1px;background:var(--bd);margin:${compact ? 8 : 12}px -12px}`,
     ".prow{display:flex;gap:4px;align-items:flex-end;margin-bottom:4px}",
     ".pf{display:flex;flex-direction:column;gap:3px;flex:1;min-width:0}",
     ".pf>label{font-size:10px;color:var(--t2)}",
@@ -71,7 +72,7 @@ export function injectStyles(theme = "dark", page = { w: 794, h: 1123 }) {
     ".dz.hint{border-color:var(--bh)}",
     ".chip{position:absolute;top:-18px;left:-1px;padding:2px 6px;color:#fff;font-size:9px;font-weight:500;white-space:nowrap;font-family:var(--mono);pointer-events:none;opacity:0}",
     ".elw:hover>.chip,.elw.sel>.chip{opacity:1}",
-    ".li{display:flex;align-items:center;gap:6px;padding:5px 8px;border-radius:var(--r4);cursor:pointer;font-size:11px;font-weight:500;transition:all .1s;border:1px solid transparent}",
+    ".li{display:flex;align-items:center;gap:6px;padding:var(--row);border-radius:var(--r4);cursor:pointer;font-size:11px;font-weight:500;transition:all .1s;border:1px solid transparent}",
     ".li:hover{background:var(--b3)}",
     ".li.sel{background:var(--ad);border-color:var(--ac);color:var(--t0)}",
     ".bcb{padding:3px 8px;border:1px solid var(--bd);border-radius:var(--r4);background:transparent;cursor:pointer;color:var(--t1);font-size:10px;transition:all .12s;white-space:nowrap}",

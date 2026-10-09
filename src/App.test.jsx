@@ -170,3 +170,87 @@ describe('publishing over a newer copy', () => {
     expect(sent[1].overwrite).toBe(1)
   })
 })
+
+describe('templates, commands and messages', () => {
+  const count = () => Number(/(\d+) elements/.exec(document.body.textContent)[1])
+
+  it('opens the command palette with Ctrl+K and runs the chosen command', async () => {
+    const App = await loadApp()
+    render(<App />)
+    fireEvent.keyDown(window, { key: 'k', ctrlKey: true })
+    const input = screen.getByLabelText('Command')
+    fireEvent.change(input, { target: { value: 'template' } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+    expect(screen.getByText('Start from a template')).toBeTruthy()
+  })
+
+  it('a template replaces the design and brings its doctype and fields, and undo brings the old one back', async () => {
+    const App = await loadApp()
+    render(<App />)
+    const before = count()
+    fireEvent.keyDown(window, { key: 'k', ctrlKey: true })
+    fireEvent.change(screen.getByLabelText('Command'), { target: { value: 'gallery' } })
+    fireEvent.keyDown(screen.getByLabelText('Command'), { key: 'Enter' })
+    fireEvent.click(screen.getByText('Purchase Order'))
+    expect(screen.getByTitle('Document type and fields').textContent).toBe('/Purchase Order')
+    expect(count()).toBeGreaterThan(before)
+    const saved = JSON.parse(localStorage.getItem('pf_current'))
+    expect(saved.version).toBe(2)
+    expect(saved.docFields.some(f => f.name === 'supplier_name')).toBe(true)
+    fireEvent.keyDown(window, { key: 'z', ctrlKey: true })
+    expect(count()).toBe(before)
+  })
+
+  it('offers an undo after deleting', async () => {
+    const App = await loadApp()
+    render(<App />)
+    fireEvent.click(button('Text'))
+    const withText = count()
+    fireEvent.keyDown(window, { key: 'Delete' })
+    expect(screen.getByText('Deleted a text element')).toBeTruthy()
+    fireEvent.click(button('Undo'))
+    expect(count()).toBe(withText)
+    expect(screen.queryByText('Deleted a text element')).toBeNull()
+  })
+
+  it('says what is wrong with a file that is not a design', async () => {
+    const App = await loadApp()
+    const { container } = render(<App />)
+    const file = new File([JSON.stringify({ tree: { nodes: {}, pages: [] } })], 'broken.json', { type: 'application/json' })
+    fireEvent.change(container.querySelector('#json-import'), { target: { files: [file] } })
+    await waitFor(() => expect(screen.getByText('Could not import broken.json')).toBeTruthy())
+    expect(screen.getByText(/Design must have at least one page/)).toBeTruthy()
+  })
+
+  it('the V key switches the Move tool', async () => {
+    const App = await loadApp()
+    render(<App />)
+    const tool = screen.getByTitle(/Move tool/)
+    expect(tool.getAttribute('aria-pressed')).toBe('false')
+    fireEvent.keyDown(window, { key: 'v' })
+    expect(tool.getAttribute('aria-pressed')).toBe('true')
+  })
+
+  it('standalone publishing checks the design and needs a tested connection', async () => {
+    const App = await loadApp()
+    render(<App />)
+    fireEvent.click(button('Export'))
+    fireEvent.click(screen.getByText('To an ERPNext site…'))
+    expect(screen.getByText('Publish to an ERPNext site')).toBeTruthy()
+    expect(screen.getAllByRole('button', { name: 'Publish' }).pop().disabled).toBe(true)
+  })
+})
+
+describe('checks before publishing on a site', () => {
+  it('blocks publishing while the design has a problem', async () => {
+    window.PF_FRAPPE = { csrf_token: 'tok', user: 'Administrator', site: 'erp.test', print_font: 'Inter, sans-serif' }
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, status: 200, json: async () => ({ message: [] }) })))
+    const App = await loadApp()
+    const { container } = render(<App />)
+    fireEvent.click(button('Publish'))
+    const nameInput = [...container.querySelectorAll('input.pi')].pop()
+    fireEvent.change(nameInput, { target: { value: 'a/b' } })
+    expect(screen.getByText(/invalid characters/)).toBeTruthy()
+    expect(screen.getAllByRole('button', { name: 'Publish' }).pop().disabled).toBe(true)
+  })
+})

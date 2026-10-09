@@ -1,0 +1,13 @@
+[package]
+name = "pdfgen"
+version = "0.1.0"
+edition = "2021"
+description = "PrintForge native PDF renderer — replaces render_pdf.py + wkhtmltopdf"
+
+[dependencies]
+headless_chrome = "1.0"
+anyhow = "1"
+
+[profile.release]
+lto = true
+strip = true

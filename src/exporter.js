@@ -75,12 +75,16 @@ function renderElement(tree, id, indent, extraStyle = "", inFlow = false, report
   const el = tree.nodes[id]; if (!el) return "";
   const p = "  ".repeat(indent);
   const isRoot = tree.pages.some(p => (p.roots || []).includes(id));
-  const isFlow = isRoot || inFlow || el.mode === "flow" || el._flow;
+  // _free: pinned at x/y by the Move tool, even at the top level or inside a flow container
+  const isFlow = (isRoot || inFlow || el.mode === "flow" || el._flow) && !el._free;
 
   const isShape = ["rect", "circle", "triangle", "line", "image", "path"].includes(el.type);
+  // A pinned top-level element is placed from the page edge on the canvas; the printed
+  // page box starts inside the margins, so take them off.
+  const off = isRoot && el._free ? pagePadding(tree) : 0;
   const pos = isFlow
     ? ("position:relative;" + (isRoot && !isShape ? "width:100%;" : "width:" + cssLen(el.w) + ";"))
-    : "position:absolute;left:" + (el.x || 0) + "px;top:" + (el.y || 0) + "px;width:" + cssLen(el.w) + ";";
+    : "position:absolute;left:" + ((el.x || 0) - off) + "px;top:" + ((el.y || 0) - off) + "px;width:" + cssLen(el.w) + ";";
 
   const base = pos + (el.margin != null && isFlow ? "margin:" + cssLen(el.margin) + ";" : "") + (extraStyle || "");
 

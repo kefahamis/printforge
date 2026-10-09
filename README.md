@@ -52,7 +52,8 @@ PDF generator; the layout here is built for wkhtmltopdf.
 ## Using it
 
 1. **New** — type any doctype on the site and load its fields, pick a report, or
-   start from a preset.
+   start from a preset. Or open the **template gallery** (Ctrl+K, "template") for a
+   ready-made Sales Invoice, Purchase Order or Delivery Note.
 2. Design the page. Set paper, margins and letter head in the Page panel (shown when
    nothing is selected).
 3. **Preview** fills it with sample data; enter a document name there to render a
@@ -63,6 +64,22 @@ PDF generator; the layout here is built for wkhtmltopdf.
 
 Publishing will not overwrite a standard Print Format, or one that was not made in
 PrintForge. Use a different name in that case.
+
+### Working in the editor
+
+- **Ctrl+K** opens the command palette: every action and setting, searchable.
+- **Right-click** an element to duplicate, delete, reorder or select its container;
+  right-click the page to add a page or pick a template.
+- **Move tool (V).** Elements normally sit where their container's layout puts them.
+  With the Move tool on, dragging one pulls it out and pins it where you drop it.
+- **Layers.** Drag an element onto a container in the Layers tab to move it inside.
+  Inserting while a container is selected adds the new element to it.
+- **Undo** treats a whole drag or resize as one step. Deleting shows an Undo prompt.
+- **Checks before publishing.** The publish dialog lists problems that would break the
+  format (unbalanced template tags, a table bound to something that is not a child
+  table, columns without a field) and blocks publishing until they are fixed. Fields
+  that are not in the doctype's field list are flagged as things to check.
+- **Compact spacing** for the side panels is in the command palette.
 
 ### How a design maps onto Frappe's print system
 
@@ -141,8 +158,14 @@ npm run build:frappe     # rebuild printforge/public/dist/
 After `npm run build:frappe`, run `bench build --app printforge` on the bench (or
 reload, if the app folder is the one the bench uses) to serve the new bundle.
 
-The standalone dev server has no site behind it, so Publish, Load fields from site
-and the site list in History only appear when the builder is opened through Frappe.
+The standalone dev server has no site behind it, so Load fields from site, the live
+previews and the site list in History only appear when the builder is opened through
+Frappe. Standalone, **Export → To an ERPNext site…** publishes through the site's REST
+API with an API key instead. That needs `allow_cors` on the site, keeps the key in the
+browser, and stores only the printable format, not the editable design.
+
+Design files are versioned (`.pf.json`); older files are upgraded when opened, and a
+file that is not a design is rejected with the reason.
 
 Designs are autosaved in the browser and can be kept in its saved list with **Save**.
 Browser storage is small; if it fills up the editor says so and keeps working, and
@@ -153,8 +176,11 @@ publishing or exporting as JSON is then the way to keep the work.
 | Path | What it is |
 | --- | --- |
 | `src/App.jsx` | The editor shell: state, toolbar, canvas, publishing |
-| `src/components/` | Canvas elements, side panels, dialogs, form controls |
-| `src/tree.js` | Design-tree operations, element defaults, starter designs |
+| `src/components/` | Canvas elements, side panels, dialogs, overlays (gallery, palette, menus), form controls |
+| `src/tree.js` | Design-tree operations, element defaults, starter designs and the template list |
+| `src/schema.js`, `src/validate.js`, `src/linter.js` | Versioned design files; checks before publishing |
+| `src/erpnext.js` | Standalone publishing through the REST API |
+| `src/guidesEngine.js`, `src/wasm/`, `rust/` | Alignment guides in WebAssembly (with a JS fallback) and a Chrome-based PDF tool; see `rust/README.md` |
 | `src/exporter.js` | Design → Print Format HTML (Jinja, or Frappe's browser templates for reports) |
 | `src/frappe.js` | Calls to the site API |
 | `src/styles.js`, `src/doctypes.js` | Editor stylesheet; preset doctype list |

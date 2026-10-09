@@ -9,7 +9,10 @@
         "build:frappe": "vite build --mode frappe",
         "lint": "eslint . --ext js,jsx --report-unused-disable-directives --max-warnings 0",
         "preview": "vite preview",
-        "test": "vitest run"
+        "test": "vitest run",
+        "build:wasm": "wasm-pack build rust/guides-wasm --target web --release --out-dir ../../src/wasm/guides --no-pack",
+        "build:pdfgen": "cargo build --release --manifest-path rust/pdfgen/Cargo.toml",
+        "pdf": "rust\\pdfgen\\target\\release\\pdfgen.exe"
     },
     "dependencies": {
         "html-to-image": "^1.11.13",

@@ -1,37 +1,47 @@
 import { useState } from 'react';
 import { getPathData } from '../exporter.js';
-import { snap, dc, isDesc, calcGuides, SAMPLE_DATA, subst, COMPANY_LOGO_EXPR } from '../tree.js';
+import { snap, dc, isDesc, SAMPLE_DATA, subst, COMPANY_LOGO_EXPR } from '../tree.js';
+import { calcGuidesFast } from '../guidesEngine.js';
 
 // ── Resize handles ────────────────────────────────────────────────────────────
-export function RH({ el, onUpdate, zoom, preview, tree, pageIdx, onGuides }) {
+// A drag or resize updates the design on every frame without recording history, then
+// commits once on release, so the whole gesture is a single undo step.
+export function RH({ el, onUpdate, zoom, preview, tree, pageIdx, onGuides, gesture }) {
   const mk = dir => e => {
     e.stopPropagation();
+    e.preventDefault();
     const ox = e.clientX, oy = e.clientY, { x: ix, y: iy, w: iw, h: ih } = el;
+    let last = null, frame = 0;
+    const scaled = (nw, nh) => el.type === 'path' ? {
+      points: (el.points || []).map(p => ({
+        x: p.x * nw / iw, y: p.y * nh / ih,
+        c1: { x: p.c1.x * nw / iw, y: p.c1.y * nh / ih },
+        c2: { x: p.c2.x * nw / iw, y: p.c2.y * nh / ih }
+      }))
+    } : {};
     const mv = ev => {
       const dx = (ev.clientX - ox) / zoom, dy = (ev.clientY - oy) / zoom;
       let nx = ix, ny = iy, nw = iw, nh = ih;
-      if (dir.includes("e")) nw = Math.max(20, snap(iw + dx));
-      if (dir.includes("s")) nh = Math.max(8, snap(ih + dy));
-      if (dir.includes("w")) { nw = Math.max(20, snap(iw - dx)); nx = snap(ix + dx); }
-      if (dir.includes("n")) { nh = Math.max(8, snap(ih - dy)); ny = snap(iy + dy); }
-
-      if (onGuides) onGuides(calcGuides(tree, el.id, { x: nx, y: ny, w: nw, h: nh }, pageIdx));
-      if (el.type === 'path') {
-        const sw = nw / el.w, sh = nh / el.h;
-        const pts = (el.points || []).map(p => ({
-          x: p.x * sw, y: p.y * sh,
-          c1: { x: p.c1.x * sw, y: p.c1.y * sh },
-          c2: { x: p.c2.x * sw, y: p.c2.y * sh }
-        }));
-        onUpdate(el.id, { x: nx, y: ny, w: nw, h: nh, points: pts });
-      } else {
-        onUpdate(el.id, { x: nx, y: ny, w: nw, h: nh });
-      }
+      if (dir.includes("e")) nw = Math.max(20, iw + dx);
+      if (dir.includes("s")) nh = Math.max(8, ih + dy);
+      if (dir.includes("w")) { nw = Math.max(20, iw - dx); nx = ix + (iw - nw); }
+      if (dir.includes("n")) { nh = Math.max(8, ih - dy); ny = iy + (ih - nh); }
+      if (!last && gesture) gesture.begin();
+      last = { x: nx, y: ny, w: nw, h: nh };
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => {
+        onUpdate(el.id, { ...last, ...scaled(last.w, last.h) }, true);
+        if (onGuides) onGuides(calcGuidesFast(tree, el.id, last, pageIdx));
+      });
     };
     const up = () => {
+      cancelAnimationFrame(frame);
       if (onGuides) onGuides({ h: [], v: [] });
       window.removeEventListener("mousemove", mv);
       window.removeEventListener("mouseup", up);
+      if (!last) return;
+      const w = snap(last.w), h = snap(last.h);
+      onUpdate(el.id, { x: snap(last.x), y: snap(last.y), w, h, ...scaled(w, h) });
     };
     window.addEventListener("mousemove", mv); window.addEventListener("mouseup", up);
   };
@@ -39,7 +49,7 @@ export function RH({ el, onUpdate, zoom, preview, tree, pageIdx, onGuides }) {
 }
 
 // ── Canvas node ───────────────────────────────────────────────────────────────
-export function CNode({ nodeId, tree, selected, onSelect, onUpdate, onDrop, zoom, depth, flow, preview, onActive, pageIdx, onGuides, penMode, setPenMode, editPointIdx, setEditPointIdx, selPointIdx, setSelPointIdx, editHandle, setEditHandle }) {
+export function CNode({ nodeId, tree, selected, onSelect, onUpdate, onDrop, zoom, depth, flow, preview, onActive, pageIdx, onGuides, penMode, setPenMode, editPointIdx, setEditPointIdx, selPointIdx, setSelPointIdx, editHandle, setEditHandle, moveMode, onDetach, onContextMenu, gesture }) {
   const [over, setOver] = useState(false);
   const el = tree.nodes[nodeId];
   if (!el) return null;
@@ -50,36 +60,59 @@ export function CNode({ nodeId, tree, selected, onSelect, onUpdate, onDrop, zoom
   const isFlow = el.mode === "flow";
   const color = dc(depth);
 
-  const onMD = e => {
-    if (preview || e.target.classList.contains("rh")) return;
-    e.stopPropagation(); onSelect(nodeId);
-    if (onActive) onActive();
-    if (flow) return;
-    const ox = e.clientX, oy = e.clientY, ex = el.x, ey = el.y;
+  // `detached`: the Move tool has just pulled this element out of its container; the
+  // tree in this closure predates that, so guides are skipped and the drop always commits.
+  const startDrag = (e, ex, ey, detached = false) => {
+    const ox = e.clientX, oy = e.clientY;
+    let last = null, frame = 0;
     const mv = ev => {
-      const nx = snap(ex + (ev.clientX - ox) / zoom);
-      const ny = snap(ey + (ev.clientY - oy) / zoom);
-      if (onGuides) onGuides(calcGuides(tree, nodeId, { x: nx, y: ny, w: el.w, h: el.h }, pageIdx));
-      onUpdate(nodeId, { x: nx, y: ny });
+      if (!last && gesture) gesture.begin();
+      last = { x: ex + (ev.clientX - ox) / zoom, y: ey + (ev.clientY - oy) / zoom };
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => {
+        onUpdate(nodeId, last, true);
+        if (onGuides && !detached) onGuides(calcGuidesFast(tree, nodeId, { ...last, w: el.w, h: el.h }, pageIdx));
+      });
     };
     const up = () => {
+      cancelAnimationFrame(frame);
       if (onGuides) onGuides({ h: [], v: [] });
       window.removeEventListener("mousemove", mv);
       window.removeEventListener("mouseup", up);
+      if (last || detached) onUpdate(nodeId, { x: snap((last || { x: ex }).x), y: snap((last || { y: ey }).y) });
     };
     window.addEventListener("mousemove", mv); window.addEventListener("mouseup", up);
+  };
+
+  const pinned = !!el._free;
+  const onMD = e => {
+    if (preview || e.button === 2 || e.target.classList.contains("rh")) return;
+    e.stopPropagation(); onSelect(nodeId);
+    if (onActive) onActive();
+    if (flow && !pinned) {
+      if (!moveMode || !onDetach) return;
+      // Move tool: pull the element out of the flow and pin it where it currently sits on the page
+      const host = e.currentTarget, pageEl = host.closest('.pf-print-area');
+      if (!pageEl) return;
+      const hr = host.getBoundingClientRect(), pr = pageEl.getBoundingClientRect();
+      const gx = (hr.left - pr.left) / zoom, gy = (hr.top - pr.top) / zoom;
+      onDetach(nodeId, gx, gy);
+      startDrag(e, gx, gy, true);
+      return;
+    }
+    startDrag(e, el.x || 0, el.y || 0);
   };
 
   const label = el.type === "container" ? (el.layout || "container") + " (" + ((el.children || []).length) + ")" : (el.type || "element");
 
   // Natural Flow Logic for Canvas View
   const isRoot = tree.pages.some(p => (p.roots || []).includes(nodeId));
-  const isFlowWrapper = isRoot || flow;
+  const isFlowWrapper = (isRoot || flow) && !pinned;
   const isShape = ["rect", "circle", "triangle", "line", "image"].includes(el.type);
 
   const baseStyle = isFlowWrapper
     ? { position: "relative", cursor: "move", userSelect: "none", flexShrink: 0, width: isRoot && !isShape ? "100%" : el.w, ...(el.margin != null ? { margin: el.margin } : {}) }
-    : { position: "absolute", left: el.x, top: el.y, width: el.w, cursor: "move", userSelect: "none" };
+    : { position: "absolute", left: el.x, top: el.y, width: el.w, cursor: "move", userSelect: "none", ...(pinned ? { zIndex: 2 } : {}) };
 
   let body = null;
   const canHold = ["container", "rect", "circle", "triangle"].includes(el.type);
@@ -91,21 +124,21 @@ export function CNode({ nodeId, tree, selected, onSelect, onUpdate, onDrop, zoom
   } else if (el.type === "rect") {
     body = (
       <div style={{ height: "100%", background: el.fill, border: el.strokeWidth > 0 ? el.strokeWidth + "px " + (el.style || "solid") + " " + el.stroke : "none", borderRadius: el.borderRadius, opacity: el.opacity, padding: el.padding, position: "relative", overflow: "hidden", ...layoutStyles }}>
-        {(el.children || []).map(c => <CNode key={c} nodeId={c} tree={tree} selected={selected} onSelect={onSelect} onUpdate={onUpdate} onDrop={onDrop} zoom={zoom} depth={depth + 1} flow={true} preview={preview} onActive={onActive} pageIdx={pageIdx} onGuides={onGuides} penMode={penMode} setPenMode={setPenMode} editPointIdx={editPointIdx} setEditPointIdx={setEditPointIdx} selPointIdx={selPointIdx} setSelPointIdx={setSelPointIdx} editHandle={editHandle} setEditHandle={setEditHandle} />)}
+        {(el.children || []).map(c => <CNode key={c} nodeId={c} tree={tree} selected={selected} onSelect={onSelect} onUpdate={onUpdate} onDrop={onDrop} zoom={zoom} depth={depth + 1} flow={true} preview={preview} onActive={onActive} pageIdx={pageIdx} onGuides={onGuides} penMode={penMode} setPenMode={setPenMode} editPointIdx={editPointIdx} setEditPointIdx={setEditPointIdx} selPointIdx={selPointIdx} setSelPointIdx={setSelPointIdx} editHandle={editHandle} setEditHandle={setEditHandle} moveMode={moveMode} onDetach={onDetach} onContextMenu={onContextMenu} gesture={gesture} />)}
         {!preview && over && <div className="dz over" />}
       </div>
     );
   } else if (el.type === "circle") {
     body = (
       <div style={{ height: "100%", background: el.fill, border: el.strokeWidth > 0 ? el.strokeWidth + "px " + (el.style || "solid") + " " + el.stroke : "none", borderRadius: "50%", opacity: el.opacity, padding: el.padding, position: "relative", overflow: "hidden", ...layoutStyles }}>
-        {(el.children || []).map(c => <CNode key={c} nodeId={c} tree={tree} selected={selected} onSelect={onSelect} onUpdate={onUpdate} onDrop={onDrop} zoom={zoom} depth={depth + 1} flow={true} preview={preview} onActive={onActive} pageIdx={pageIdx} onGuides={onGuides} penMode={penMode} setPenMode={setPenMode} editPointIdx={editPointIdx} setEditPointIdx={setEditPointIdx} selPointIdx={selPointIdx} setSelPointIdx={setSelPointIdx} editHandle={editHandle} setEditHandle={setEditHandle} />)}
+        {(el.children || []).map(c => <CNode key={c} nodeId={c} tree={tree} selected={selected} onSelect={onSelect} onUpdate={onUpdate} onDrop={onDrop} zoom={zoom} depth={depth + 1} flow={true} preview={preview} onActive={onActive} pageIdx={pageIdx} onGuides={onGuides} penMode={penMode} setPenMode={setPenMode} editPointIdx={editPointIdx} setEditPointIdx={setEditPointIdx} selPointIdx={selPointIdx} setSelPointIdx={setSelPointIdx} editHandle={editHandle} setEditHandle={setEditHandle} moveMode={moveMode} onDetach={onDetach} onContextMenu={onContextMenu} gesture={gesture} />)}
         {!preview && over && <div className="dz over" />}
       </div>
     );
   } else if (el.type === "triangle") {
     body = (
       <div style={{ height: "100%", background: el.fill, clipPath: "polygon(50% 0%, 0% 100%, 100% 100%)", opacity: el.opacity, padding: el.padding, position: "relative", overflow: "hidden", ...layoutStyles }}>
-        {(el.children || []).map(c => <CNode key={c} nodeId={c} tree={tree} selected={selected} onSelect={onSelect} onUpdate={onUpdate} onDrop={onDrop} zoom={zoom} depth={depth + 1} flow={true} preview={preview} onActive={onActive} pageIdx={pageIdx} onGuides={onGuides} penMode={penMode} setPenMode={setPenMode} editPointIdx={editPointIdx} setEditPointIdx={setEditPointIdx} selPointIdx={selPointIdx} setSelPointIdx={setSelPointIdx} editHandle={editHandle} setEditHandle={setEditHandle} />)}
+        {(el.children || []).map(c => <CNode key={c} nodeId={c} tree={tree} selected={selected} onSelect={onSelect} onUpdate={onUpdate} onDrop={onDrop} zoom={zoom} depth={depth + 1} flow={true} preview={preview} onActive={onActive} pageIdx={pageIdx} onGuides={onGuides} penMode={penMode} setPenMode={setPenMode} editPointIdx={editPointIdx} setEditPointIdx={setEditPointIdx} selPointIdx={selPointIdx} setSelPointIdx={setSelPointIdx} editHandle={editHandle} setEditHandle={setEditHandle} moveMode={moveMode} onDetach={onDetach} onContextMenu={onContextMenu} gesture={gesture} />)}
         {!preview && over && <div className="dz over" />}
       </div>
     );
@@ -163,7 +196,7 @@ export function CNode({ nodeId, tree, selected, onSelect, onUpdate, onDrop, zoom
     body = (
       <div style={{ height: flow ? "auto" : el.h, minHeight: el.h, background: el.fill, border: el.strokeWidth > 0 ? el.strokeWidth + "px solid " + el.stroke : preview ? "none" : "1px dashed #d0d0d0", borderRadius: el.borderRadius, opacity: el.opacity, padding: el.padding, position: "relative", overflow: "hidden", ...(isFlow ? layoutStyles : {}) }}>
         {!preview && <div style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: 2, background: color, opacity: .4, pointerEvents: "none" }} />}
-        {depth < 30 ? (el.children || []).map(c => <CNode key={c} nodeId={c} tree={tree} selected={selected} onSelect={onSelect} onUpdate={onUpdate} onDrop={onDrop} zoom={zoom} depth={depth + 1} flow={isFlow} preview={preview} onActive={onActive} pageIdx={pageIdx} onGuides={onGuides} penMode={penMode} setPenMode={setPenMode} editPointIdx={editPointIdx} setEditPointIdx={setEditPointIdx} selPointIdx={selPointIdx} setSelPointIdx={setSelPointIdx} editHandle={editHandle} setEditHandle={setEditHandle} />) : <div style={{ fontSize: 8, color: "red" }}>Max depth</div>}
+        {depth < 30 ? (el.children || []).map(c => <CNode key={c} nodeId={c} tree={tree} selected={selected} onSelect={onSelect} onUpdate={onUpdate} onDrop={onDrop} zoom={zoom} depth={depth + 1} flow={isFlow} preview={preview} onActive={onActive} pageIdx={pageIdx} onGuides={onGuides} penMode={penMode} setPenMode={setPenMode} editPointIdx={editPointIdx} setEditPointIdx={setEditPointIdx} selPointIdx={selPointIdx} setSelPointIdx={setSelPointIdx} editHandle={editHandle} setEditHandle={setEditHandle} moveMode={moveMode} onDetach={onDetach} onContextMenu={onContextMenu} gesture={gesture} />) : <div style={{ fontSize: 8, color: "red" }}>Max depth</div>}
         {!preview && <div className={"dz" + (over ? " over" : isEmpty ? " hint" : "")} />}
         {isEmpty && !over && !preview && <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", flexDirection: "column", gap: 4, pointerEvents: "none" }}>
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#b0b0b0" strokeWidth="1.5"><path d="M12 5v14M5 12h14" /></svg>
@@ -176,11 +209,12 @@ export function CNode({ nodeId, tree, selected, onSelect, onUpdate, onDrop, zoom
   return (
     <div className={"elw" + (isSel && !preview ? " sel" : "")} data-pf-node={nodeId} style={baseStyle}
       onMouseDown={onMD}
+      onContextMenu={e => { if (preview || !onContextMenu) return; e.preventDefault(); e.stopPropagation(); onSelect(nodeId); onContextMenu(e, nodeId); }}
       onClick={e => e.stopPropagation()}
       onDragOver={e => { if (!canHold || preview) return; e.preventDefault(); e.stopPropagation(); setOver(true); }}
       onDragLeave={() => setOver(false)}
       onDrop={e => { if (!canHold || preview) return; e.preventDefault(); e.stopPropagation(); setOver(false); const id = e.dataTransfer.getData("text/plain"); if (id && id !== nodeId && !isDesc(tree.nodes, id, nodeId)) onDrop(id, nodeId); }}
-      draggable={!flow && !preview}
+      draggable={!flow && !preview && !moveMode && !pinned}
       onDragStart={e => { if (preview) return; e.dataTransfer.setData("text/plain", nodeId); e.stopPropagation(); }}>
       {!preview && <div className="chip" style={{ background: color }}>{label}</div>}
       {body}
@@ -198,7 +232,7 @@ export function CNode({ nodeId, tree, selected, onSelect, onUpdate, onDrop, zoom
         </svg>
       )}
       {isSel && !preview && !penMode && <div className="sel-ring" style={{ borderColor: color }} />}
-      {isSel && !preview && <RH el={el} onUpdate={onUpdate} zoom={zoom} preview={preview} tree={tree} pageIdx={pageIdx} onGuides={onGuides} />}
+      {isSel && !preview && <RH el={el} onUpdate={onUpdate} zoom={zoom} preview={preview} tree={tree} pageIdx={pageIdx} onGuides={onGuides} gesture={gesture} />}
     </div>
   );
 }
