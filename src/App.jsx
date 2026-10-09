@@ -1,13 +1,16 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
-import { getSettings, pageDims, paperLabel, getPathData, repeatRoots, pageContentHeight, toPrintFormatHtml, toStandaloneHtml } from './exporter.js';
-import { snap, uid, treeUpd, treeAdd, treeRemove, migrateTree, treeMove, findParent, isDesc, cloneTree, topLevel, copyNodes, pasteNodes, alignNodes, distributeNodes, mkT, mkPath, FACS, buildTree, buildReportTree, buildSampleInvoiceTree } from './tree.js';
-import { DOC_TEMPLATES, fieldsFromTree } from './templates.js';
+import { getSettings, pageDims, paperLabel, getPathData, repeatRoots, pageContentHeight, marginMm, toPrintFormatHtml, toStandaloneHtml } from './exporter.js';
+import { snap, uid, treeUpd, treeAdd, treeRemove, migrateTree, treeMove, rmFromParent, findParent, isDesc, cloneTree, topLevel, copyNodes, pasteNodes, alignNodes, distributeNodes, mkT, mkPath, FACS, buildTree, buildReportTree, buildSampleInvoiceTree } from './tree.js';
 import { injectStyles } from './styles.js';
 import { FRAPPE, frappeCall, frappePdf } from './frappe.js';
 import { SmartGuides } from './components/atoms.jsx';
 import { CNode, Ruler } from './components/Canvas.jsx';
 import { Breadcrumb, Props, LeftPanel } from './components/Panels.jsx';
 import { ErrorGuardian, NewDesignModal, DesignHistoryModal, PublishModal } from './components/Modals.jsx';
+import { TemplateGallery, CommandPalette, ContextMenu, UndoSnackbar, Toast, Tips, EmptyState, StandalonePublishModal } from './components/Overlays.jsx';
+import { serializeDesign, loadDesignFile } from './schema.js';
+import { validateDesign } from './validate.js';
+import { DOC_TEMPLATES, fieldsFromTree } from './templates.js';
 
 // ── App ───────────────────────────────────────────────────────────────────────
 function MainApp() {
@@ -18,19 +21,30 @@ function MainApp() {
   const savedState = useMemo(() => {
     try {
       const s = localStorage.getItem("pf_current");
-      return s ? JSON.parse(s) : null;
+      return s ? loadDesignFile(JSON.parse(s)) : null; // validate + migrate
     } catch (e) { return null; }
   }, []);
 
-  const [tree, setTree] = useState(() => migrateTree(savedState?.tree || buildTree()));
+  const [tree, setTreeState] = useState(() => savedState?.tree || migrateTree(buildTree()));
   const [past, setPast] = useState([]);
   const [future, setFuture] = useState([]);
 
+  // The latest tree, readable from handlers that outlive a render (a drag in progress)
+  const treeRef = useRef(tree);
+  treeRef.current = tree;
+  const setTree = useCallback((next) => { treeRef.current = next; setTreeState(next); }, []);
+  // While a drag or resize is in progress, history keeps the tree from before it began,
+  // so however many frames it takes, it is one undo step.
+  const gestureBase = useRef(null);
+  const gesture = useMemo(() => ({ begin: () => { if (!gestureBase.current) gestureBase.current = treeRef.current; } }), []);
+
   const record = useCallback((nextTree) => {
-    setPast(p => [...p.slice(-49), tree]);
+    const before = gestureBase.current || treeRef.current;
+    gestureBase.current = null;
+    setPast(p => [...p.slice(-49), before]);
     setFuture([]);
     setTree(nextTree);
-  }, [tree]);
+  }, [setTree]);
 
   const undo = useCallback(() => {
     if (past.length === 0) return;
@@ -73,6 +87,16 @@ function MainApp() {
   // Name of the Print Format on the site this design was published to or opened from
   const [printFormat, setPrintFormat] = useState(savedState?.printFormat || "");
   const [showPublish, setShowPublish] = useState(false);
+  const [showGallery, setShowGallery] = useState(false);
+  const [showPalette, setShowPalette] = useState(false);
+  const [moveMode, setMoveMode] = useState(false);
+  const [contextMenu, setContextMenu] = useState(null);
+  const [toast, setToast] = useState(null);
+  const [leftTab, setLeftTab] = useState(null);
+  const [density, setDensity] = useState(() => { try { return localStorage.getItem("pf_density") || "comfortable"; } catch (e) { return "comfortable"; } });
+  const [seenTips, setSeenTips] = useState(() => { try { return localStorage.getItem("pf_tips") === "seen"; } catch (e) { return true; } });
+  const remember = (key, value) => { try { localStorage.setItem(key, value); } catch (e) { /* storage full: not remembered */ } };
+  useEffect(() => { if (toast?.type === "success") { const t = setTimeout(() => setToast(null), 3500); return () => clearTimeout(t); } }, [toast]);
   // The site's timestamp for that Print Format when it was last read or written here
   const [siteModified, setSiteModified] = useState(savedState?.siteModified || "");
   // Identifies this design in the browser's saved list, so two designs for one doctype stay separate
@@ -91,7 +115,7 @@ function MainApp() {
 
   // Auto-Save Effect
   useEffect(() => {
-    setStorageFull(!store("pf_current", { tree, doctype, docFields, assets, printFormat, siteModified, designId }));
+    setStorageFull(!store("pf_current", serializeDesign(tree, doctype, docFields, assets, { printFormat, siteModified, designId })));
   }, [tree, doctype, docFields, assets, printFormat, siteModified, designId, store]);
 
   const [zoom, setZoom] = useState(0.76);
@@ -143,7 +167,7 @@ function MainApp() {
   const settings = getSettings(tree);
   // `padding` also resets the page margins, for paper sizes the usual margin would swamp
   const updateSettings = (ch, padding) => record({ ...tree, settings: { ...settings, ...ch }, ...(padding == null ? {} : { pages: tree.pages.map(pg => ({ ...pg, padding })) }) });
-  useEffect(() => { injectStyles(theme, pg); }, [theme, pg.w, pg.h]);
+  useEffect(() => { injectStyles(theme, pg, density); }, [theme, pg.w, pg.h, density]);
 
   const handlePrint = useCallback(() => {
     setIsPrinting(true);
@@ -292,12 +316,15 @@ function MainApp() {
     try {
       const f = FACS[type] || mkT;
       const el = { ...f(60, 80), ...ov };
-      record(treeAdd(tree, el, null, activePageIdx));
-      setSel(el.id);
+      const selNode = sel ? tree.nodes[sel] : null;
+      const parentId = selNode && ["container", "rect", "circle", "triangle"].includes(selNode.type) ? sel : null;
+      record(treeAdd(tree, parentId ? { ...el, _flow: selNode.mode === "flow" } : el, parentId, activePageIdx));
+      // When nesting, the container stays selected so the next insert goes in too
+      if (!parentId) setSel(el.id);
     } catch (e) {
       console.error("Critical error adding element:", e);
     }
-  }, [activePageIdx, tree, record]);
+  }, [activePageIdx, tree, record, sel]);
   const addPage = useCallback(() => {
     record({ ...tree, pages: [...(tree.pages || []), { id: uid(), name: "Page " + ((tree.pages || []).length + 1), roots: [] }] });
   }, [tree, record]);
@@ -346,15 +373,20 @@ function MainApp() {
   }, [tree, record]);
 
   const updateEl = useCallback((id, ch, noRecord = false) => {
-    const newTree = treeUpd(tree, id, ch);
+    const newTree = treeUpd(treeRef.current, id, ch);
     if (!noRecord) record(newTree);
     else setTree(newTree);
-  }, [tree, record]);
+  }, [record, setTree]);
+  const [snackbar, setSnackbar] = useState(null);
   const deleteMany = useCallback(ids => {
+    const top = topLevel(tree, ids);
+    if (!top.length) return;
     let t = tree;
-    for (const id of topLevel(tree, ids)) t = treeRemove(t, id);
+    for (const id of top) t = treeRemove(t, id);
     record(t);
     setSel(null);
+    const el = tree.nodes[top[0]];
+    setSnackbar({ message: "Deleted " + (top.length > 1 ? top.length + " elements" : el.type === "container" && (el.children || []).length ? "a container and what was in it" : "a " + el.type + " element") });
   }, [tree, record, setSel]);
   const deleteEl = useCallback(id => deleteMany([id]), [deleteMany]);
   // Each copy goes right after its original
@@ -404,6 +436,8 @@ function MainApp() {
       if (i < 0) return;
       if (dir === "up" && i < kids.length - 1) [kids[i], kids[i + 1]] = [kids[i + 1], kids[i]];
       if (dir === "down" && i > 0) [kids[i], kids[i - 1]] = [kids[i - 1], kids[i]];
+      if (dir === "front") kids.push(kids.splice(i, 1)[0]);
+      if (dir === "back") kids.unshift(kids.splice(i, 1)[0]);
       record({ ...tree, nodes: { ...tree.nodes, [pid]: { ...p, children: kids } } });
     } else {
       const page = tree.pages[activePageIdx];
@@ -412,6 +446,8 @@ function MainApp() {
       if (i < 0) return;
       if (dir === "up" && i < r.length - 1) [r[i], r[i + 1]] = [r[i + 1], r[i]];
       if (dir === "down" && i > 0) [r[i], r[i - 1]] = [r[i - 1], r[i]];
+      if (dir === "front") r.push(r.splice(i, 1)[0]);
+      if (dir === "back") r.unshift(r.splice(i, 1)[0]);
       const pages = [...tree.pages];
       pages[activePageIdx] = { ...page, roots: r };
       record({ ...tree, pages });
@@ -428,6 +464,9 @@ function MainApp() {
   useEffect(() => {
     const h = e => {
       const isMod = e.metaKey || e.ctrlKey;
+      const typing = ["INPUT", "TEXTAREA", "SELECT"].includes(e.target.tagName) || e.target.isContentEditable;
+      if (isMod && e.key.toLowerCase() === "k") { e.preventDefault(); setShowPalette(true); return; }
+      if (!isMod && !typing && e.key.toLowerCase() === "v") { e.preventDefault(); setMoveMode(m => !m); return; }
       if (isMod && e.key.toLowerCase() === "z") {
         if (e.shiftKey) redo(); else undo();
         e.preventDefault(); return;
@@ -516,7 +555,72 @@ function MainApp() {
   }, [sel, multi, tree, deleteMany, updateEl, dupMany, copySel, pasteClip, record, setSel, undo, redo, penMode, editPointIdx, editHandle, selPointIdx, zoom, preview, showCode]);
 
   const copy = () => { navigator.clipboard.writeText(jinja); setCopied(true); setTimeout(() => setCopied(false), 2200); };
+
+  const openContextMenu = (e, nodeId) => {
+    const items = nodeId ? [
+      { id: "dup", label: "Duplicate", kbd: "Ctrl+D", run: () => dupEl(nodeId) },
+      { id: "del", label: "Delete", kbd: "Del", run: () => deleteEl(nodeId) },
+      "sep",
+      { id: "front", label: "Bring to front", run: () => zOrder(nodeId, "front") },
+      { id: "back", label: "Send to back", run: () => zOrder(nodeId, "back") },
+      "sep",
+      { id: "parent", label: "Select its container", kbd: "Esc", disabled: !findParent(tree, nodeId), run: () => setSel(findParent(tree, nodeId)) },
+    ] : [
+      { id: "page", label: "Add page", run: () => addPage() },
+      { id: "gallery", label: "Start from a template", run: () => setShowGallery(true) },
+    ];
+    setContextMenu({ x: e.clientX, y: e.clientY, items });
+  };
+
+  const commands = [
+    { id: "new", label: "New design", hint: "Pick a doctype or report", run: () => setShowNewModal(true) },
+    { id: "gallery", label: "Template gallery", hint: "Invoice, purchase order, delivery note", run: () => setShowGallery(true) },
+    { id: "history", label: "Open a saved design", run: () => setShowHistoryModal(true) },
+    { id: "save", label: "Save to this browser", run: () => saveDesign() },
+    { id: "publish", label: FRAPPE ? (printFormat ? "Update the Print Format" : "Publish as a Print Format") : "Publish to an ERPNext site", run: () => setShowPublish(true) },
+    { id: "copy", label: "Copy the Print Format HTML", run: () => copy() },
+    { id: "json", label: "Export design as JSON", run: () => exportJSON() },
+    { id: "edit", label: "Edit view", run: () => { setPreview(false); setShowCode(false); } },
+    { id: "preview", label: "Preview", run: () => { setPreview(true); setShowCode(false); } },
+    { id: "code", label: "Show the generated template", run: () => { setShowCode(true); setPreview(false); } },
+    { id: "doc", label: "Document type and fields", run: () => { setPreview(false); setShowCode(false); setLeftTab({ tab: "doc" }); } },
+    { id: "move", label: moveMode ? "Turn the Move tool off" : "Turn the Move tool on", kbd: "V", run: () => setMoveMode(m => !m) },
+    { id: "grid", label: showGrid ? "Hide the grid" : "Show the grid", run: () => setShowGrid(g => !g) },
+    { id: "rulers", label: showRulers ? "Hide the rulers" : "Show the rulers", run: () => setShowRulers(r => !r) },
+    { id: "theme", label: theme === "dark" ? "Switch to the light theme" : "Switch to the dark theme", run: () => setTheme(t => t === "dark" ? "light" : "dark") },
+    { id: "density", label: density === "compact" ? "Comfortable spacing" : "Compact spacing", hint: "Panel density", run: () => { const d = density === "compact" ? "comfortable" : "compact"; setDensity(d); remember("pf_density", d); } },
+    { id: "undo", label: "Undo", kbd: "Ctrl+Z", run: () => undo() },
+    { id: "redo", label: "Redo", kbd: "Ctrl+Y", run: () => redo() },
+  ];
   const newDesign = () => setShowNewModal(true);
+  // Move tool: pull an element out of its container and pin it at its current place on the
+  // page. The drag that follows commits it, as one undo step with the move itself.
+  const detachToFree = useCallback((id, x, y) => {
+    const base = treeRef.current;
+    const node = base.nodes[id];
+    if (!node) return;
+    gesture.begin();
+    let t = rmFromParent(base, id);
+    t = treeAdd(t, node, null, activePageIdx);
+    t = treeUpd(t, id, { x: snap(x), y: snap(y), _free: true, w: typeof node.w === "number" ? node.w : 240 });
+    setTree(t);
+    setSel(id);
+  }, [activePageIdx, gesture, setTree, setSel]);
+
+  const applyTemplate = (t) => {
+    record(migrateTree(t.build()));
+    setDoctype(t.doctype);
+    setDocFields(t.docFields);
+    // The site knows the doctype's full field list, including what its link fields point at
+    if (FRAPPE) frappeCall("get_doctype_fields", { doctype: t.doctype }).then(f => { if (f?.length) setDocFields(f); }, () => { });
+    setSel(null);
+    setActivePageIdx(0);
+    setPrintFormat("");
+    setSiteModified("");
+    setDesignId(uid());
+    setShowGallery(false);
+  };
+
   const handleCreateNew = (dt, fs, printFor = "DocType", templateId = null) => {
     const template = DOC_TEMPLATES.find(t => t.id === templateId);
     const templateTree = template ? migrateTree(template.build()) : null;
@@ -552,7 +656,7 @@ function MainApp() {
       doctype,
       html: jinja,
       print_for: isReport ? "Report" : "DocType",
-      design: JSON.stringify({ version: "1.1", doctype, docFields, assets, tree }),
+      design: JSON.stringify(serializeDesign(tree, doctype, docFields, assets)),
       make_default: makeDefault ? 1 : 0,
       margin_mm: Math.round(pad * 25.4 / 96 * 10) / 10,
       // Only vouch for the site's copy if it is the format this design came from
@@ -670,19 +774,12 @@ function MainApp() {
   };
 
   const exportJSON = () => {
-    const data = {
-      version: "1.1",
-      doctype,
-      docFields,
-      assets,
-      tree,
-      exportedAt: new Date().toISOString()
-    };
+    const data = serializeDesign(tree, doctype, docFields, assets);
     const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `${doctype.toLowerCase().replace(/\s+/g, "_")}_design.json`;
+    a.download = `${doctype.toLowerCase().replace(/\s+/g, "_")}.pf.json`;
     a.click();
     URL.revokeObjectURL(url);
   };
@@ -693,21 +790,21 @@ function MainApp() {
     const reader = new FileReader();
     reader.onload = (re) => {
       try {
-        const data = JSON.parse(re.target.result);
-        if (data.tree && data.doctype) {
-          setTree(migrateTree(data.tree));
-          setDoctype(data.doctype);
-          if (data.docFields) setDocFields(data.docFields);
-          if (data.assets) setAssets(data.assets);
-          setSel(null);
-          setSaveStatus("saved");
-          setTimeout(() => setSaveStatus(null), 2000);
-        } else {
-          alert("Invalid design file format.");
-        }
+        let raw;
+        try { raw = JSON.parse(re.target.result); } catch (err) { throw new Error("The file is not valid JSON."); }
+        const d = loadDesignFile(raw);
+        record(d.tree);
+        setDoctype(d.doctype);
+        setDocFields(d.docFields);
+        setAssets(d.assets);
+        setPrintFormat("");
+        setSiteModified("");
+        setDesignId(uid());
+        setSel(null);
+        setActivePageIdx(0);
+        setToast({ type: "success", title: "Design imported", body: d.doctype + " · " + Object.keys(d.tree.nodes).length + " elements" });
       } catch (err) {
-        console.error("Import failed:", err);
-        alert("Failed to parse design file.");
+        setToast({ type: "error", title: "Could not import " + file.name, body: err.message });
       }
     };
     reader.readAsText(file);
@@ -720,6 +817,9 @@ function MainApp() {
         <div style={{ display: "flex", alignItems: "center", gap: 8, marginRight: 14 }}>
           <span style={{ fontWeight: 600, fontSize: 13 }}>PrintForge</span>
           {FRAPPE && <span style={{ fontSize: 11, color: "var(--t2)" }}>{FRAPPE.site}</span>}
+          <button className="tb" title="Document type and fields" onClick={() => { setPreview(false); setShowCode(false); setLeftTab({ tab: "doc" }); }} style={{ gap: 4, color: "var(--t1)" }}>
+            <span style={{ color: "var(--t2)" }}>/</span>{doctype}
+          </button>
         </div>
         <div style={{ width: 1, height: 24, background: "var(--bd)", marginRight: 10 }} />
         <button className="tb" onClick={newDesign} style={{ marginRight: 10 }}>
@@ -759,6 +859,9 @@ function MainApp() {
           </button>
         </div>
         <div style={{ flex: 1 }} />
+        <button className={"ib" + (moveMode ? " on" : "")} onClick={() => setMoveMode(m => !m)} aria-pressed={moveMode} title="Move tool (V): drag any element. Elements inside a layout are pulled out and pinned where you drop them." style={{ marginRight: 8 }}>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M5 9l-3 3 3 3M9 5l3-3 3 3M15 19l-3 3-3-3M19 9l3 3-3 3M2 12h20M12 2v20" /></svg>
+        </button>
         <button className="ib" onClick={() => setTheme(t => t === "dark" ? "light" : "dark")} style={{ marginRight: 8 }}>
           {theme === "dark" ? <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364-6.364l-.707.707M6.343 17.657l-.707.707m0-11.314l.707.707m11.314 11.314l.707.707M12 8a4 4 0 100 8 4 4 0 000-8z" /></svg> : <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 12.79A9 9 0 1111.21 3 7 7 0 0021 12.79z" /></svg>}
         </button>
@@ -800,6 +903,10 @@ function MainApp() {
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ marginRight: 8 }}><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="7 10 12 15 17 10" /><line x1="12" y1="15" x2="12" y2="3" /></svg>
                 As Design (JSON)
               </button>
+              {!FRAPPE && <>
+                <div style={{ height: 1, background: "var(--bd)", margin: "4px 0" }} />
+                <button className="tb" style={{ width: "100%", justifyContent: "flex-start", border: "none" }} onClick={() => { setShowExportMenu(false); setShowPublish(true); }}>To an ERPNext site…</button>
+              </>}
             </div>
           )}
         </div>
@@ -829,7 +936,7 @@ function MainApp() {
           }
           record(updatedTree);
           setSel(root.id);
-        }} doctype={doctype} setDoctype={setDoctype} docFields={docFields} setDocFields={setDocFields} tree={tree} selected={sel} multi={multi} onSelect={selectEl} penMode={penMode} setPenMode={setPenMode} />}
+        }} doctype={doctype} setDoctype={setDoctype} docFields={docFields} setDocFields={setDocFields} tree={tree} selected={sel} multi={multi} onSelect={selectEl} penMode={penMode} setPenMode={setPenMode} onDrop={handleDrop} openTab={leftTab} />}
 
         <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden", position: "relative" }}>
           {FRAPPE && preview && isReport && (
@@ -929,7 +1036,8 @@ function MainApp() {
                         className="pf-print-area"
                         onMouseDown={() => setActivePageIdx(pidx)}
                         style={{ position: "relative", width: pg.w, minHeight: pg.h, ...(settings.font ? { fontFamily: settings.font } : {}), background: "#ffffff", boxShadow: isPrinting ? "none" : "0 0 0 1px rgba(0,0,0,.1),0 2px 8px rgba(0,0,0,.12)", padding: page.padding ?? 40, display: "flex", flexDirection: "column", outline: !preview && !showCode && activePageIdx === pidx ? "1px solid var(--ac)" : "none" }}
-                        onClick={e => { if (e.target === e.currentTarget && !pressedOnNode.current) setSel(null); }}>
+                        onClick={e => { if (e.target === e.currentTarget && !pressedOnNode.current) setSel(null); }}
+                        onContextMenu={e => { if (preview || showCode) return; e.preventDefault(); openContextMenu(e, null); }}>
                         {!preview && !showCode && !isPrinting && showGrid && (
                           <div className="pf-grid" style={{ "--gc": "rgba(0,0,0,.04)", "--gs": gridSize + "px" }} />
                         )}
@@ -946,7 +1054,8 @@ function MainApp() {
                             <img src={page.backgroundImg} style={{ width: "100%", height: "100%", objectFit: "contain" }} />
                           </div>
                         )}
-                        {page.roots.map(id => <CNode key={id} nodeId={id} tree={tree} selected={sel} multi={multi} onSelect={selectEl} onUpdate={updateEl} onDrop={handleDrop} zoom={zoom} depth={0} flow={true} preview={preview} onActive={() => setActivePageIdx(pidx)} pageIdx={pidx} onGuides={setActiveGuides} penMode={penMode} setPenMode={setPenMode} editPointIdx={editPointIdx} setEditPointIdx={setEditPointIdx} editHandle={editHandle} setEditHandle={setEditHandle} />)}
+                        {page.roots.map(id => <CNode key={id} nodeId={id} tree={tree} selected={sel} multi={multi} onSelect={selectEl} onUpdate={updateEl} onDrop={handleDrop} zoom={zoom} depth={0} flow={true} preview={preview} onActive={() => setActivePageIdx(pidx)} pageIdx={pidx} onGuides={setActiveGuides} penMode={penMode} setPenMode={setPenMode} editPointIdx={editPointIdx} setEditPointIdx={setEditPointIdx} editHandle={editHandle} setEditHandle={setEditHandle} moveMode={moveMode} onDetach={detachToFree} onContextMenu={openContextMenu} gesture={gesture} />)}
+                        {!preview && !showCode && !isPrinting && page.roots.length === 0 && <EmptyState onGallery={() => setShowGallery(true)} />}
                         {activePageIdx === pidx && <SmartGuides guides={activeGuides} />}
                       </div>
                     </div>
@@ -980,9 +1089,16 @@ function MainApp() {
         <div style={{ flex: 1 }} />
         <span>{paperLabel(tree)}</span>
       </div>
+      {showGallery && <TemplateGallery onCancel={() => setShowGallery(false)} onSelect={applyTemplate} />}
+      {showPalette && <CommandPalette commands={commands} onCancel={() => setShowPalette(false)} />}
+      {contextMenu && <ContextMenu {...contextMenu} onClose={() => setContextMenu(null)} />}
+      {snackbar && <UndoSnackbar message={snackbar.message} onUndo={() => { undo(); setSnackbar(null); }} onDismiss={() => setSnackbar(null)} />}
+      {toast && <Toast toast={toast} onDismiss={() => setToast(null)} />}
+      {!seenTips && !showNewModal && !showGallery && <Tips onDismiss={() => { setSeenTips(true); remember("pf_tips", "seen"); }} />}
       {showNewModal && <NewDesignModal onCancel={() => setShowNewModal(false)} onCreate={handleCreateNew} />}
       {showHistoryModal && <DesignHistoryModal onCancel={() => setShowHistoryModal(false)} onLoad={loadDesign} onDelete={deleteSaved} onLoadSite={loadSiteDesign} />}
-      {showPublish && <PublishModal doctype={doctype} isReport={isReport} initialName={printFormat} onCancel={() => setShowPublish(false)} onPublish={publish} />}
+      {showPublish && FRAPPE && <PublishModal doctype={doctype} isReport={isReport} initialName={printFormat} onCancel={() => setShowPublish(false)} onPublish={publish} validate={name => validateDesign(tree, doctype, docFields, jinja, name)} />}
+      {showPublish && !FRAPPE && <StandalonePublishModal doctype={doctype} isReport={isReport} html={jinja} marginMm={marginMm(tree)} issues={validateDesign(tree, doctype, docFields, jinja, "x")} onClose={() => setShowPublish(false)} />}
     </div>
   );
 }

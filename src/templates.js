@@ -227,6 +227,13 @@ export const DOC_TEMPLATES = [
   { id: "delivery-labels", label: "Carton labels", doctype: "Delivery Note", note: "100 x 50 mm, one label per item", build: deliveryLabels },
 ];
 
+// The same designs in the shape the template gallery lists (see TEMPLATES in tree.js)
+const GROUPS = { "Sales Invoice": "Selling", "Quotation": "Selling", "Purchase Order": "Buying", "Delivery Note": "Stock", "Item": "Stock", "Payment Entry": "Accounts", "Salary Slip": "Payroll" };
+export const GALLERY_TEMPLATES = DOC_TEMPLATES.map(t => ({
+  id: t.id, label: t.label, group: GROUPS[t.doctype] || "", doctype: t.doctype, desc: "For " + t.doctype + ". " + t.note + ".", build: t.build,
+  get docFields() { return fieldsFromTree(t.build()); },
+}));
+
 // The fields a design refers to, for the field list when no site is there to ask
 export function fieldsFromTree(tree) {
   const seen = new Map();

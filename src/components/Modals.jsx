@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { FRAPPE, frappeCall } from '../frappe.js';
 import { PRESET_DOCTYPES } from '../doctypes.js';
 import { DOC_TEMPLATES } from '../templates.js';
+import { IssueList } from './Overlays.jsx';
 import { Txt, Sec } from './atoms.jsx';
 
 // ── Error Guardian ────────────────────────────────────────────────────────────
@@ -267,8 +268,11 @@ export function DesignHistoryModal({ onCancel, onLoad, onDelete, onLoadSite }) {
 }
 
 // ── Publish Modal ─────────────────────────────────────────────────────────────
-export function PublishModal({ doctype, isReport, initialName, onCancel, onPublish }) {
+export function PublishModal({ doctype, isReport, initialName, onCancel, onPublish, validate }) {
   const [name, setName] = useState(initialName || doctype + " PrintForge");
+  // Checked against the doctype's field list; problems block publishing, the rest is advice
+  const issues = validate ? validate(name) : [];
+  const blocked = issues.some(i => i.severity === "error");
   const [makeDefault, setMakeDefault] = useState(false);
   const [state, setState] = useState(null); // null | "busy" | { error, conflict } | { done }
   const submit = async (overwrite = false) => {
@@ -301,13 +305,14 @@ export function PublishModal({ doctype, isReport, initialName, onCancel, onPubli
             {!isReport && <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: "var(--t1)", cursor: "pointer" }}>
               <input type="checkbox" checked={makeDefault} onChange={e => setMakeDefault(e.target.checked)} style={{ accentColor: "var(--ac)" }} />Make this the default print format for {doctype}
             </label>}
+            {validate && <IssueList issues={issues} />}
             {state?.error && <p style={{ fontSize: 12, color: "var(--rd)", lineHeight: 1.5 }}>{state.error}</p>}
           </div>
         )}
         <div style={{ padding: "12px 20px", borderTop: "1px solid var(--bd)", display: "flex", justifyContent: "flex-end", gap: 8 }}>
           <button onClick={onCancel} style={{ padding: "7px 14px", background: "transparent", border: "1px solid var(--bm)", color: "var(--t1)", borderRadius: "var(--r4)", fontSize: 12, cursor: "pointer" }}>{done ? "Close" : "Cancel"}</button>
           {!done && state?.conflict && <button onClick={() => submit(true)} style={{ padding: "7px 14px", background: "transparent", border: "1px solid var(--rd)", color: "var(--rd)", borderRadius: "var(--r4)", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>Replace it</button>}
-          {!done && !state?.conflict && <button onClick={() => submit(false)} disabled={state === "busy" || !name.trim()} style={{ padding: "7px 14px", background: "var(--ac)", border: "1px solid var(--ac)", color: "#fff", borderRadius: "var(--r4)", fontSize: 12, fontWeight: 600, cursor: "pointer", opacity: state === "busy" || !name.trim() ? .6 : 1 }}>{state === "busy" ? "Publishing" : "Publish"}</button>}
+          {!done && !state?.conflict && <button onClick={() => submit(false)} disabled={state === "busy" || !name.trim() || blocked} title={blocked ? "Fix the problems listed first" : ""} style={{ padding: "7px 14px", background: "var(--ac)", border: "1px solid var(--ac)", color: "#fff", borderRadius: "var(--r4)", fontSize: 12, fontWeight: 600, cursor: "pointer", opacity: state === "busy" || !name.trim() || blocked ? .6 : 1 }}>{state === "busy" ? "Publishing" : "Publish"}</button>}
         </div>
       </div>
     </div>
