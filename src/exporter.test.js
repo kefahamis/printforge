@@ -177,3 +177,73 @@ describe('pageContentHeight', () => {
     expect(pageContentHeight(withHeader)).toBeLessThan(1043 - 40)
   })
 })
+
+describe('receipt and label paper', () => {
+  it('prints a custom size in millimetres, already turned when landscape', () => {
+    const t = tree([text("a", "hi")], ["a"], { settings: { pageSize: "Custom", customW: 80, customH: 200 } })
+    expect(pageDims(t)).toEqual({ w: 302, h: 756 })
+    const html = toPrintFormatHtml(t)
+    expect(html).toContain('page-width: 80mm; page-height: 200mm')
+    expect(html).not.toContain('page-size')
+    const turned = toPrintFormatHtml({ ...t, settings: { ...t.settings, orientation: "Landscape" } })
+    expect(turned).toContain('page-width: 200mm; page-height: 80mm')
+    expect(turned).not.toContain('orientation:')
+  })
+})
+
+describe('QR codes and barcodes', () => {
+  const qr = (o = {}) => ({ id: "q", type: "qr", children: [], w: 96, h: 120, source: "expr", value: "doc.name", ...o })
+  const bc = (o = {}) => ({ id: "b", type: "barcode", children: [], w: 220, h: 64, source: "expr", value: "{{ doc.name }}", symbology: "ean13", showText: false, ...o })
+  it('are drawn by the site from a field, and left out while it is empty', () => {
+    const html = toPrintFormatHtml(tree([qr(), bc()], ["q", "b"]))
+    expect(html).toContain('{% if doc.name %}')
+    expect(html).toContain('{{ printforge_qr(doc.name, 96) }}')
+    expect(html).toContain('{{ printforge_barcode(doc.name, "ean13", 220, 64, 0) }}')
+  })
+  it('quote fixed text so it cannot be read as a template expression', () => {
+    const html = toPrintFormatHtml(tree([qr({ source: "text", value: 'https://x.test/?a="b"' })], ["q"]))
+    expect(html).toContain('printforge_qr("https://x.test/?a=\\"b\\"", 96)')
+  })
+  it('are skipped in report formats, which the browser fills in', () => {
+    const html = toPrintFormatHtml(tree([qr()], ["q"], { settings: { printFor: "Report" } }))
+    expect(html).not.toContain('printforge_qr')
+  })
+})
+
+describe('repeating a block for each row', () => {
+  it('loops over the child table and formats the row fields', () => {
+    const t = tree([box("c", ["a"], { repeatFor: "items", breakAfter: true }), text("a", "{{ item.item_name }} {{ item.amount }}")], ["c"])
+    const html = toPrintFormatHtml(t)
+    expect(html).toContain('{% for item in doc.items %}')
+    expect(html).toContain('{{ item.get_formatted("amount", doc) }}')
+    expect(html).toContain('{% if not loop.last %}<div style="page-break-after:always;"></div>{% endif %}')
+    expect(html).toContain('{% endfor %}')
+  })
+  it('accepts only a field name', () => {
+    const html = toPrintFormatHtml(tree([box("c", [], { repeatFor: "items %}{{ evil" })], ["c"]))
+    expect(html).toContain('{% for item in doc.itemsevil %}')
+  })
+})
+
+describe('watermark', () => {
+  const t = tree([text("a", "hi")], ["a"])
+  it('follows the document status', () => {
+    const html = toPrintFormatHtml({ ...t, settings: { watermark: "status" } })
+    expect(html).toContain('{%- set pf_wm = _("DRAFT") if (doc.meta.is_submittable and doc.docstatus == 0) else (_("CANCELLED") if doc.docstatus == 2 else "") %}')
+    expect(html).toContain('{% if pf_wm %}<div class="pf-wms">')
+    expect(html).toContain('>{{ pf_wm }}</div>')
+  })
+  it('lays one mark down per printed page, because the PDF step does not repeat fixed elements', () => {
+    const html = toPrintFormatHtml({ ...t, settings: { watermark: "text", watermarkText: "COPY" } })
+    const each = pageContentHeight(t)
+    expect(html).not.toContain('position: fixed')
+    expect(html).toContain(`<div class="pf-wm" style="top:${Math.round(0.3 * each)}px;">`)
+    expect(html).toContain(`<div class="pf-wm" style="top:${Math.round(1.3 * each)}px;">`)
+    expect(html).toContain('.pf-wms { position: absolute; top: 0; left: 0; right: 0; bottom: 0; overflow: hidden;')
+  })
+  it('prints your own wording, and nothing when there is none', () => {
+    expect(toPrintFormatHtml({ ...t, settings: { watermark: "text", watermarkText: "COPY" } })).toContain('>{{ _("COPY") }}</div>')
+    expect(toPrintFormatHtml({ ...t, settings: { watermark: "text", watermarkText: " " } })).not.toContain('pf-wm')
+    expect(toPrintFormatHtml(t)).not.toContain('pf-wm')
+  })
+})

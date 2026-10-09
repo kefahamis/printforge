@@ -4,7 +4,10 @@ authors = [{ name = "Tagrit" }]
 description = "Visual print format designer for Frappe / ERPNext"
 requires-python = ">=3.10"
 dynamic = ["version"]
-dependencies = []
+dependencies = [
+    # Draws barcodes in printed documents. QR codes use pyqrcode, which Frappe already ships.
+    "python-barcode>=0.15,<1",
+]
 
 [build-system]
 requires = ["flit_core >=3.4,<4"]

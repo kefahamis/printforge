@@ -170,3 +170,38 @@ describe('publishing over a newer copy', () => {
     expect(sent[1].overwrite).toBe(1)
   })
 })
+
+describe('several elements and ready-made designs', () => {
+  const saved = () => JSON.parse(localStorage.getItem('pf_current'))
+  const count = () => Object.keys(saved().tree.nodes).length
+  const roots = () => saved().tree.pages[0].roots
+
+  it('selects more with Shift, then copies, pastes and deletes them together', async () => {
+    const App = await loadApp()
+    const { container } = render(<App />)
+    const before = count()
+    const [first, second] = roots()
+    const size = id => 1 + (function inside(n) { return (n.children || []).reduce((a, c) => a + 1 + inside(saved().tree.nodes[c]), 0) })(saved().tree.nodes[id])
+    fireEvent.mouseDown(container.querySelector(`[data-pf-node="${first}"]`))
+    fireEvent.mouseDown(container.querySelector(`[data-pf-node="${second}"]`), { shiftKey: true })
+    expect(screen.getByText('2 elements selected')).toBeTruthy()
+    fireEvent.keyDown(window, { key: 'c', ctrlKey: true })
+    fireEvent.keyDown(window, { key: 'v', ctrlKey: true })
+    expect(count()).toBe(before + size(first) + size(second))
+    expect(roots().length).toBe(7) // beside the originals, not inside the copied container
+    expect(screen.getByText('2 elements selected')).toBeTruthy() // the pasted pair
+    fireEvent.keyDown(window, { key: 'Delete' })
+    expect(count()).toBe(before)
+  })
+
+  it('opens a ready-made design for its doctype', async () => {
+    const App = await loadApp()
+    render(<App />)
+    fireEvent.click(button(/^New$/))
+    fireEvent.click(screen.getByText('Till receipt'))
+    expect(saved().doctype).toBe('Sales Invoice')
+    expect(saved().tree.settings.pageSize).toBe('Custom')
+    expect(Object.values(saved().tree.nodes).some(n => n.type === 'qr')).toBe(true)
+    expect(screen.getAllByText(/80 x 200 mm/).length).toBeGreaterThan(0)
+  })
+})

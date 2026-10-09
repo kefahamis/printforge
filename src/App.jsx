@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
-import { getSettings, pageDims, getPathData, repeatRoots, pageContentHeight, toPrintFormatHtml, toStandaloneHtml } from './exporter.js';
-import { snap, uid, treeUpd, treeAdd, treeRemove, migrateTree, treeMove, findParent, isDesc, cloneTree, mkT, mkPath, FACS, buildTree, buildReportTree, buildSampleInvoiceTree } from './tree.js';
+import { getSettings, pageDims, paperLabel, getPathData, repeatRoots, pageContentHeight, toPrintFormatHtml, toStandaloneHtml } from './exporter.js';
+import { snap, uid, treeUpd, treeAdd, treeRemove, migrateTree, treeMove, findParent, isDesc, cloneTree, topLevel, copyNodes, pasteNodes, alignNodes, distributeNodes, mkT, mkPath, FACS, buildTree, buildReportTree, buildSampleInvoiceTree } from './tree.js';
+import { DOC_TEMPLATES, fieldsFromTree } from './templates.js';
 import { injectStyles } from './styles.js';
 import { FRAPPE, frappeCall, frappePdf } from './frappe.js';
 import { SmartGuides } from './components/atoms.jsx';
@@ -47,7 +48,17 @@ function MainApp() {
     setTree(next);
   }, [future, tree]);
   const [activePageIdx, setActivePageIdx] = useState(0);
-  const [sel, setSel] = useState(null);
+  // One element is the selection the panels describe; Shift+click adds others to act on together
+  const [sel, setSelRaw] = useState(null);
+  const [multi, setMulti] = useState([]);
+  const setSel = useCallback(id => { setSelRaw(id); setMulti([]); }, []);
+  const selectEl = useCallback((id, e) => {
+    if (e?.shiftKey && sel && id) {
+      if (id !== sel) setMulti(m => m.includes(id) ? m.filter(x => x !== id) : [...m, id]);
+      return;
+    }
+    setSel(id);
+  }, [sel, setSel]);
   const [penMode, setPenMode] = useState(false); // false, 'drawing', 'editing'
   const [doctype, setDoctype] = useState(savedState?.doctype || "Sales Invoice");
   const [activeGuides, setActiveGuides] = useState({ h: [], v: [] });
@@ -93,6 +104,10 @@ function MainApp() {
   const [isPrinting, setIsPrinting] = useState(false);
   const [showExportMenu, setShowExportMenu] = useState(false);
   const printRef = useRef(null);
+  // Selecting a nested element shows the path bar, which moves the page under the pointer;
+  // the click that follows can then land on the empty page. A press that began on an
+  // element must not clear the selection it just made.
+  const pressedOnNode = useRef(false);
   const [scrollPos, setScrollPos] = useState({ x: 0, y: 0 });
   const handleScroll = (e) => {
     setScrollPos({ x: e.currentTarget.scrollLeft, y: e.currentTarget.scrollTop });
@@ -126,7 +141,8 @@ function MainApp() {
   const contentH = pageContentHeight(tree, { heights });
   const pg = pageDims(tree);
   const settings = getSettings(tree);
-  const updateSettings = (ch) => record({ ...tree, settings: { ...settings, ...ch } });
+  // `padding` also resets the page margins, for paper sizes the usual margin would swamp
+  const updateSettings = (ch, padding) => record({ ...tree, settings: { ...settings, ...ch }, ...(padding == null ? {} : { pages: tree.pages.map(pg => ({ ...pg, padding })) }) });
   useEffect(() => { injectStyles(theme, pg); }, [theme, pg.w, pg.h]);
 
   const handlePrint = useCallback(() => {
@@ -334,25 +350,50 @@ function MainApp() {
     if (!noRecord) record(newTree);
     else setTree(newTree);
   }, [tree, record]);
-  const deleteEl = useCallback(id => { record(treeRemove(tree, id)); setSel(null); }, [tree, record]);
-  const dupEl = useCallback(id => {
-    const pid = findParent(tree, id);
-    const [nid, newNodes] = cloneTree(tree.nodes, id);
-    const m = { ...tree.nodes, ...newNodes };
-    if (pid) {
-      const p = m[pid];
-      record({ ...tree, nodes: { ...m, [pid]: { ...p, children: [...(p.children || []), nid] } } });
-    } else {
-      const page = tree.pages[activePageIdx];
-      const idx = page.roots.indexOf(id);
-      const r = [...page.roots];
-      r.splice(idx + 1, 0, nid);
-      const pages = [...tree.pages];
-      pages[activePageIdx] = { ...page, roots: r };
-      record({ ...tree, nodes: m, pages });
+  const deleteMany = useCallback(ids => {
+    let t = tree;
+    for (const id of topLevel(tree, ids)) t = treeRemove(t, id);
+    record(t);
+    setSel(null);
+  }, [tree, record, setSel]);
+  const deleteEl = useCallback(id => deleteMany([id]), [deleteMany]);
+  // Each copy goes right after its original
+  const dupMany = useCallback(ids => {
+    let t = tree;
+    const added = [];
+    for (const id of topLevel(tree, ids)) {
+      const pid = findParent(t, id);
+      const [nid, sub] = cloneTree(t.nodes, id);
+      const nodes = { ...t.nodes, ...sub };
+      const after = list => { const r = [...list]; r.splice(r.indexOf(id) + 1, 0, nid); return r; };
+      if (pid) t = { ...t, nodes: { ...nodes, [pid]: { ...nodes[pid], children: after(nodes[pid].children || []) } } };
+      else t = { ...t, nodes, pages: t.pages.map(pg => (pg.roots || []).includes(id) ? { ...pg, roots: after(pg.roots) } : pg) };
+      added.push(nid);
     }
-    setSel(nid);
-  }, [tree, record, activePageIdx]);
+    if (!added.length) return;
+    record(t);
+    setSelRaw(added[0]);
+    setMulti(added.slice(1));
+  }, [tree, record]);
+  const dupEl = useCallback(id => dupMany([id]), [dupMany]);
+
+  // The clipboard lives in browser storage, so it carries over to another design or tab
+  const copySel = useCallback(ids => store("pf_clip", copyNodes(tree, ids)), [tree, store]);
+  const pasteClip = useCallback(() => {
+    let clip = null;
+    try { clip = JSON.parse(localStorage.getItem("pf_clip") || "null"); } catch (e) { /* nothing usable was copied */ }
+    // Into the selected container, or else beside the selected element. A container that was
+    // itself just copied gets its copy beside it, not inside it.
+    const holder = sel && ["container", "rect", "circle", "triangle"].includes(tree.nodes[sel]?.type) && !(clip?.roots || []).includes(sel);
+    const [next, added] = pasteNodes(tree, clip, sel ? (holder ? sel : findParent(tree, sel)) : null, activePageIdx);
+    if (!added.length) return false;
+    record(next);
+    setSelRaw(added[0]);
+    setMulti(added.slice(1));
+    return true;
+  }, [tree, sel, activePageIdx, record]);
+  const alignSel = useCallback(how => record(alignNodes(tree, [sel, ...multi], how)), [tree, sel, multi, record]);
+  const distributeSel = useCallback(axis => record(distributeNodes(tree, [sel, ...multi], axis)), [tree, sel, multi, record]);
 
   const zOrder = useCallback((id, dir) => {
     const pid = findParent(tree, id);
@@ -395,10 +436,21 @@ function MainApp() {
         redo(); e.preventDefault(); return;
       }
 
+      if (["INPUT", "TEXTAREA", "SELECT"].includes(e.target.tagName) || e.target.isContentEditable) return;
+      const editing = !preview && !showCode;
+      if (editing && isMod && e.key.toLowerCase() === "v") { if (pasteClip()) e.preventDefault(); return; }
       if (!sel) return;
-      if (["INPUT", "TEXTAREA", "SELECT"].includes(e.target.tagName)) return;
       const el = tree.nodes[sel]; if (!el) return;
+      const ids = [sel, ...multi];
+      if (editing && isMod && e.key.toLowerCase() === "c") { copySel(ids); return; }
+      if (editing && isMod && e.key.toLowerCase() === "x") { copySel(ids); deleteMany(ids); e.preventDefault(); return; }
       const s = e.shiftKey ? 8 : 1;
+      const nudge = (dx, dy) => {
+        let t = tree;
+        for (const id of ids) { const n = t.nodes[id]; if (n) t = treeUpd(t, id, { x: (n.x || 0) + dx, y: (n.y || 0) + dy }); }
+        record(t);
+        e.preventDefault();
+      };
       if (e.key === "Delete" || e.key === "Backspace") {
         if (penMode === 'editing' && selPointIdx !== -1 && sel && tree.nodes[sel]) {
           const el = tree.nodes[sel];
@@ -409,13 +461,13 @@ function MainApp() {
             return;
           }
         }
-        deleteEl(sel); return;
+        deleteMany(ids); return;
       }
-      if (e.key === "ArrowLeft") { updateEl(sel, { x: (el.x || 0) - s }); e.preventDefault(); }
-      if (e.key === "ArrowRight") { updateEl(sel, { x: (el.x || 0) + s }); e.preventDefault(); }
-      if (e.key === "ArrowUp") { updateEl(sel, { y: (el.y || 0) - s }); e.preventDefault(); }
-      if (e.key === "ArrowDown") { updateEl(sel, { y: (el.y || 0) + s }); e.preventDefault(); }
-      if (isMod && e.key === "d") { dupEl(sel); e.preventDefault(); }
+      if (e.key === "ArrowLeft") nudge(-s, 0);
+      if (e.key === "ArrowRight") nudge(s, 0);
+      if (e.key === "ArrowUp") nudge(0, -s);
+      if (e.key === "ArrowDown") nudge(0, s);
+      if (isMod && e.key.toLowerCase() === "d") { dupMany(ids); e.preventDefault(); }
       if (e.key === "Escape") { const p = findParent(tree, sel); setSel(p || null); }
     };
     const mv = e => {
@@ -461,14 +513,24 @@ function MainApp() {
       window.removeEventListener("mousemove", mv);
       window.removeEventListener("mouseup", mu);
     };
-  }, [sel, tree, deleteEl, updateEl, dupEl, undo, redo, penMode, editPointIdx, editHandle, zoom]);
+  }, [sel, multi, tree, deleteMany, updateEl, dupMany, copySel, pasteClip, record, setSel, undo, redo, penMode, editPointIdx, editHandle, selPointIdx, zoom, preview, showCode]);
 
   const copy = () => { navigator.clipboard.writeText(jinja); setCopied(true); setTimeout(() => setCopied(false), 2200); };
   const newDesign = () => setShowNewModal(true);
-  const handleCreateNew = (dt, fs, printFor = "DocType") => {
+  const handleCreateNew = (dt, fs, printFor = "DocType", templateId = null) => {
+    const template = DOC_TEMPLATES.find(t => t.id === templateId);
+    const templateTree = template ? migrateTree(template.build()) : null;
+    if (template) {
+      dt = template.doctype;
+      fs = fieldsFromTree(templateTree);
+      // The site knows the doctype's full field list; without one, the fields the design uses
+      if (FRAPPE) frappeCall("get_doctype_fields", { doctype: dt }).then(f => { if (f?.length) setDocFields(f); }, () => { });
+    }
     setDoctype(dt);
     setDocFields(fs);
-    if (printFor === "Report") {
+    if (templateTree) {
+      setTree(templateTree);
+    } else if (printFor === "Report") {
       setTree(buildReportTree(fs));
     } else if (dt.includes("Sample Invoice")) {
       setTree(buildSampleInvoiceTree());
@@ -767,7 +829,7 @@ function MainApp() {
           }
           record(updatedTree);
           setSel(root.id);
-        }} doctype={doctype} setDoctype={setDoctype} docFields={docFields} setDocFields={setDocFields} tree={tree} selected={sel} onSelect={setSel} penMode={penMode} setPenMode={setPenMode} />}
+        }} doctype={doctype} setDoctype={setDoctype} docFields={docFields} setDocFields={setDocFields} tree={tree} selected={sel} multi={multi} onSelect={selectEl} penMode={penMode} setPenMode={setPenMode} />}
 
         <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden", position: "relative" }}>
           {FRAPPE && preview && isReport && (
@@ -792,7 +854,7 @@ function MainApp() {
           <div style={{ display: FRAPPE && preview && !isReport && (live.result || live.pdf) ? "none" : "flex", flex: 1, overflow: "hidden" }}>
             {!preview && !showCode && showRulers && <Ruler type="v" zoom={zoom} scrollPos={scrollPos.y} mousePos={mousePos} />}
 
-            <div className="cv" onScroll={handleScroll} style={{ flex: 1, overflow: "auto", display: "flex", alignItems: "flex-start", justifyContent: "center", padding: 40, position: "relative" }} onClick={() => setSel(null)}>
+            <div className="cv" onScroll={handleScroll} style={{ flex: 1, overflow: "auto", display: "flex", alignItems: "flex-start", justifyContent: "center", padding: 40, position: "relative" }} onMouseDownCapture={e => { pressedOnNode.current = !!e.target.closest?.("[data-pf-node]"); }} onClick={() => { if (!pressedOnNode.current) setSel(null); }}>
               {showCode
                 ? <div style={{ width: "100%", height: "100%", overflow: "auto" }}>
                   <pre style={{ fontFamily: "var(--mono)", fontSize: 12, lineHeight: 1.7, color: "var(--t0)", whiteSpace: "pre-wrap", padding: 4 }}>
@@ -856,7 +918,7 @@ function MainApp() {
                   {tree.pages.map((page, pidx) => (
                     <div key={page.id} style={{ flexShrink: 0, position: "relative" }}>
                       {!isPrinting && <div style={{ fontSize: 10, color: "var(--t2)", marginBottom: 6, display: "flex", justifyContent: "space-between", paddingInline: 2 }}>
-                        <span>{settings.pageSize} {settings.orientation.toLowerCase()} · {pg.w}x{pg.h}px · {page.name}</span>
+                        <span>{paperLabel(tree)} · {pg.w}x{pg.h}px · {page.name}</span>
                         <div style={{ display: "flex", gap: 8 }}>
                           <button onClick={(e) => { e.stopPropagation(); dupPage(pidx); }} style={{ background: "none", border: "none", color: "var(--t2)", cursor: "pointer", fontSize: 9 }}>Duplicate</button>
                           {tree.pages.length > 1 && <button onClick={(e) => { e.stopPropagation(); delPage(pidx); }} style={{ background: "none", border: "none", color: "var(--rd)", cursor: "pointer", fontSize: 9 }}>Delete</button>}
@@ -867,7 +929,7 @@ function MainApp() {
                         className="pf-print-area"
                         onMouseDown={() => setActivePageIdx(pidx)}
                         style={{ position: "relative", width: pg.w, minHeight: pg.h, ...(settings.font ? { fontFamily: settings.font } : {}), background: "#ffffff", boxShadow: isPrinting ? "none" : "0 0 0 1px rgba(0,0,0,.1),0 2px 8px rgba(0,0,0,.12)", padding: page.padding ?? 40, display: "flex", flexDirection: "column", outline: !preview && !showCode && activePageIdx === pidx ? "1px solid var(--ac)" : "none" }}
-                        onClick={e => { if (e.target === e.currentTarget) setSel(null); }}>
+                        onClick={e => { if (e.target === e.currentTarget && !pressedOnNode.current) setSel(null); }}>
                         {!preview && !showCode && !isPrinting && showGrid && (
                           <div className="pf-grid" style={{ "--gc": "rgba(0,0,0,.04)", "--gs": gridSize + "px" }} />
                         )}
@@ -876,12 +938,15 @@ function MainApp() {
                             {Array.from({ length: 12 }, (_, k) => <div key={k} title="Roughly where a printed page ends" style={{ position: "absolute", left: 0, right: 0, top: (page.padding ?? 40) + (k + 1) * contentH, borderTop: "1px dashed rgba(217,72,77,.6)" }} />)}
                           </div>
                         )}
+                        {!isReport && (settings.watermark === "status" || (settings.watermark === "text" && settings.watermarkText)) && (
+                          <div style={{ position: "absolute", top: Math.round(pg.h * 0.3), left: 0, width: "100%", textAlign: "center", lineHeight: 1, fontSize: Math.max(18, Math.round(pg.w / 8)), fontWeight: 700, letterSpacing: Math.round(Math.max(18, Math.round(pg.w / 8)) / 12), color: "rgba(0,0,0,.09)", transform: "rotate(-30deg)", pointerEvents: "none", whiteSpace: "nowrap" }}>{settings.watermark === "status" ? "DRAFT" : settings.watermarkText}</div>
+                        )}
                         {page?.backgroundImg && !isPrinting && (
                           <div style={{ position: "absolute", inset: 0, pointerEvents: "none", zIndex: 0, opacity: page.bgOpacity ?? 0.3 }}>
                             <img src={page.backgroundImg} style={{ width: "100%", height: "100%", objectFit: "contain" }} />
                           </div>
                         )}
-                        {page.roots.map(id => <CNode key={id} nodeId={id} tree={tree} selected={sel} onSelect={setSel} onUpdate={updateEl} onDrop={handleDrop} zoom={zoom} depth={0} flow={true} preview={preview} onActive={() => setActivePageIdx(pidx)} pageIdx={pidx} onGuides={setActiveGuides} penMode={penMode} setPenMode={setPenMode} editPointIdx={editPointIdx} setEditPointIdx={setEditPointIdx} editHandle={editHandle} setEditHandle={setEditHandle} />)}
+                        {page.roots.map(id => <CNode key={id} nodeId={id} tree={tree} selected={sel} multi={multi} onSelect={selectEl} onUpdate={updateEl} onDrop={handleDrop} zoom={zoom} depth={0} flow={true} preview={preview} onActive={() => setActivePageIdx(pidx)} pageIdx={pidx} onGuides={setActiveGuides} penMode={penMode} setPenMode={setPenMode} editPointIdx={editPointIdx} setEditPointIdx={setEditPointIdx} editHandle={editHandle} setEditHandle={setEditHandle} />)}
                         {activePageIdx === pidx && <SmartGuides guides={activeGuides} />}
                       </div>
                     </div>
@@ -899,7 +964,8 @@ function MainApp() {
 
         {!showCode && !preview && <div style={{ width: 258, background: "var(--b1)", borderLeft: "1px solid var(--bd)", overflowY: "auto", flexShrink: 0 }}>
           <Props
-            tree={tree} selected={sel} docFields={docFields} onUpdate={updateEl} onDelete={deleteEl} onDup={dupEl} onZOrder={zOrder} onAddChild={addChild}
+            tree={tree} selected={sel} multi={multi} onAlign={alignSel} onDistribute={distributeSel} onDeleteMany={() => deleteMany([sel, ...multi])} onDupMany={() => dupMany([sel, ...multi])} onCopy={() => copySel([sel, ...multi])}
+            docFields={docFields} onUpdate={updateEl} onDelete={deleteEl} onDup={dupEl} onZOrder={zOrder} onAddChild={addChild}
             showRulers={showRulers} setShowRulers={setShowRulers} showGrid={showGrid} setShowGrid={setShowGrid} gridSize={gridSize} setGridSize={setGridSize}
             activePageIdx={activePageIdx} onUpdatePage={updatePage} onUpdateSettings={updateSettings}
             penMode={penMode} setPenMode={setPenMode}
@@ -912,7 +978,7 @@ function MainApp() {
         {storageFull && <span style={{ color: "var(--rd)" }}>Not being autosaved in this browser: storage is full. {FRAPPE ? "Publish" : "Export as JSON"} to keep your work.</span>}
         <span>{Object.keys(tree.nodes).length} elements</span>
         <div style={{ flex: 1 }} />
-        <span>A4 · wkhtmltopdf</span>
+        <span>{paperLabel(tree)}</span>
       </div>
       {showNewModal && <NewDesignModal onCancel={() => setShowNewModal(false)} onCreate={handleCreateNew} />}
       {showHistoryModal && <DesignHistoryModal onCancel={() => setShowHistoryModal(false)} onLoad={loadDesign} onDelete={deleteSaved} onLoadSite={loadSiteDesign} />}

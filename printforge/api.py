@@ -15,10 +15,18 @@ from printforge.utils import (
 )
 
 MARGIN_FIELDS = ("margin_top", "margin_bottom", "margin_left", "margin_right")
+VERSION_DOCTYPE = "PrintForge Version"
+# Earlier designs kept per Print Format; the oldest go first
+VERSIONS_KEPT = 15
 
 
 def _check_permission():
 	frappe.has_permission("Print Format", "write", throw=True)
+
+
+def has_app_permission():
+	"""Whether the launcher shows PrintForge to this user (see `add_to_apps_screen` in hooks.py)."""
+	return bool(frappe.has_permission("Print Format", "write"))
 
 
 def _check_doctype(doctype):
@@ -168,6 +176,59 @@ def get_design(print_format):
 	return {"name": doc.name, "doc_type": doc.doc_type, "design": design, "modified": str(doc.modified)}
 
 
+def _keep_version(print_format, design):
+	"""Keep the design a format had before it is replaced, and drop the oldest beyond the limit."""
+	if not design:
+		return
+	frappe.get_doc({"doctype": VERSION_DOCTYPE, "print_format": print_format, "design": design}).insert(
+		ignore_permissions=True
+	)
+	old = frappe.get_all(
+		VERSION_DOCTYPE,
+		filters={"print_format": print_format},
+		pluck="name",
+		order_by="creation desc",
+		limit_start=VERSIONS_KEPT,
+		limit_page_length=1000,
+	)
+	for name in old:
+		frappe.delete_doc(VERSION_DOCTYPE, name, ignore_permissions=True, force=True)
+
+
+def _version_designs(print_format):
+	return frappe.get_all(VERSION_DOCTYPE, filters={"print_format": print_format}, pluck="design")
+
+
+@frappe.whitelist()
+def list_versions(print_format):
+	"""Earlier designs of a format, newest first, with the format's current timestamp."""
+	_check_permission()
+	if not frappe.db.exists("Print Format", print_format):
+		frappe.throw(_("{0} does not exist.").format(print_format), frappe.DoesNotExistError)
+	return {
+		"modified": str(frappe.db.get_value("Print Format", print_format, "modified")),
+		"versions": frappe.get_all(
+			VERSION_DOCTYPE,
+			filters={"print_format": print_format},
+			fields=["name", "creation", "owner"],
+			order_by="creation desc",
+		),
+	}
+
+
+@frappe.whitelist()
+def get_version(version):
+	_check_permission()
+	doc = frappe.get_doc(VERSION_DOCTYPE, version)
+	return {"name": doc.name, "print_format": doc.print_format, "design": doc.design}
+
+
+def delete_versions(doc, method=None):
+	"""Print Format on_trash: its kept versions go with it."""
+	for name in frappe.get_all(VERSION_DOCTYPE, filters={"print_format": doc.name}, pluck="name"):
+		frappe.delete_doc(VERSION_DOCTYPE, name, ignore_permissions=True, force=True)
+
+
 def _save_image(print_format):
 	"""Store one image as a public file attached to the Print Format, reusing an existing copy."""
 
@@ -196,8 +257,8 @@ def _save_image(print_format):
 
 
 def _remove_unused_images(print_format, html, design):
-	"""Delete this format's stored images that the design no longer uses."""
-	in_use = stored_file_names(html, design)
+	"""Delete this format's stored images that neither the design nor a kept version uses."""
+	in_use = stored_file_names(html, design, *_version_designs(print_format))
 	for file in frappe.get_all(
 		"File",
 		filters={
@@ -271,6 +332,8 @@ def publish(
 				frappe.TimestampMismatchError,
 			)
 
+	previous_design = None if created else doc.get(DESIGN_FIELD)
+
 	def apply(html, design):
 		doc.update(
 			{
@@ -309,6 +372,8 @@ def publish(
 	if images_moved:
 		apply(html, design)
 		doc.save()
+	if previous_design and previous_design != design:
+		_keep_version(doc.name, previous_design)
 	_remove_unused_images(doc.name, html, design)
 
 	is_default = bool(cint(make_default)) and not for_report

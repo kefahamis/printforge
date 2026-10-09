@@ -3,6 +3,7 @@
 import base64
 import hashlib
 import re
+from html import escape
 
 # SVG is deliberately absent: an SVG can carry script, so it stays embedded in the <img>
 # (where it cannot run) instead of becoming a public file that could be opened directly.
@@ -61,6 +62,9 @@ def fields_from_meta(fields, child_fields=None):
 			"isChild": df.get("fieldtype") == "Table",
 			"fieldtype": df.get("fieldtype"),
 		}
+		# The builder offers the fields of the linked document too
+		if df.get("fieldtype") == "Link" and df.get("options"):
+			field["link"] = df["options"]
 		if field["isChild"] and child_fields and df.get("options"):
 			field["columns"] = [
 				{"name": c["name"], "label": c["label"], "fieldtype": c["fieldtype"]}
@@ -92,3 +96,50 @@ def fields_from_report_columns(columns, scrub):
 				}
 			)
 	return fields
+
+
+def matrix_svg(matrix, size, quiet=2):
+	"""A QR code as inline SVG. `matrix` is rows of 0/1; `quiet` is the blank border in modules."""
+	n = len(matrix) + quiet * 2
+	path = "".join(
+		f"M{x + quiet} {y + quiet}h1v1h-1z"
+		for y, row in enumerate(matrix)
+		for x, dark in enumerate(row)
+		if dark
+	)
+	return (
+		f'<svg xmlns="http://www.w3.org/2000/svg" width="{int(size)}" height="{int(size)}" '
+		f'viewBox="0 0 {n} {n}" shape-rendering="crispEdges">'
+		f'<rect width="{n}" height="{n}" fill="#ffffff"/><path d="{path}" fill="#000000"/></svg>'
+	)
+
+
+def bars_svg(modules, width, height, text="", quiet=10):
+	"""A barcode as inline SVG, with the value under it when `text` is given.
+
+	`modules` is a string of 1 (bar) and 0 (space), each one module wide, and `quiet` the
+	blank margin scanners need on either side, in modules. The bars are
+	stretched to `width`, which is what a barcode allows; the text is kept out of the SVG so
+	it is not stretched with them.
+	"""
+	text_height = 13 if text else 0
+	bar_height = max(4, int(height) - text_height)
+	rects, start = [], None
+	for i, bit in enumerate(modules + "0"):
+		if bit == "1" and start is None:
+			start = i
+		elif bit != "1" and start is not None:
+			rects.append(f"M{start + quiet} 0h{i - start}v1h-{i - start}z")
+			start = None
+	svg = (
+		f'<svg xmlns="http://www.w3.org/2000/svg" width="{int(width)}" height="{bar_height}" '
+		f'viewBox="0 0 {len(modules) + quiet * 2} 1" preserveAspectRatio="none" shape-rendering="crispEdges" '
+		f'style="display:block;"><path d="{"".join(rects)}" fill="#000000"/></svg>'
+	)
+	if not text:
+		return svg
+	return (
+		f'<div style="width:{int(width)}px;text-align:center;">{svg}'
+		f'<div style="font-size:10px;line-height:{text_height}px;font-family:monospace;color:#000000;'
+		f'white-space:nowrap;overflow:hidden;">{escape(str(text))}</div></div>'
+	)

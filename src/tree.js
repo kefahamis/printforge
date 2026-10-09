@@ -89,6 +89,70 @@ export const cloneTree = (nodes, id) => {
   return [nid, res];
 };
 
+// ── Several elements at once ──────────────────────────────────────────────────
+// Of the given elements, those not already inside another one of them
+export const topLevel = (tree, ids) => ids.filter(id => tree.nodes[id] && !ids.some(o => o !== id && isDesc(tree.nodes, o, id)));
+
+// A self-contained copy of the elements and everything inside them, for the clipboard
+export const copyNodes = (tree, ids) => {
+  const roots = topLevel(tree, ids);
+  const nodes = {};
+  for (const id of roots) for (const k of collectIds(tree.nodes, id)) if (tree.nodes[k]) nodes[k] = tree.nodes[k];
+  return { pf: "clip", roots, nodes };
+};
+
+// Adds a clipboard copy under a parent (or on the page) with fresh ids. Returns [tree, new ids].
+export const pasteNodes = (tree, clip, parentId, pageIdx = 0) => {
+  if (!clip || clip.pf !== "clip" || !clip.nodes) return [tree, []];
+  let next = tree;
+  const added = [];
+  for (const rid of clip.roots || []) {
+    if (!clip.nodes[rid]) continue;
+    const [nid, sub] = cloneTree(clip.nodes, rid);
+    const flow = !parentId || next.nodes[parentId]?.mode !== "free";
+    next = treeAdd({ ...next, nodes: { ...next.nodes, ...sub } }, { ...sub[nid], _flow: flow }, parentId, pageIdx);
+    added.push(nid);
+  }
+  return [next, added];
+};
+
+// Only elements placed freely (by x and y) can be lined up; the rest follow their container's layout
+export const isFree = (tree, id) => {
+  const pid = findParent(tree, id);
+  return !!pid && tree.nodes[pid]?.mode === "free" && tree.nodes[pid]?.type === "container";
+};
+const num = v => typeof v === "number" ? v : 0;
+const boxH = el => el.type === "line" ? (el.thickness || 1) : num(el.h);
+
+// how: left | hcenter | right | top | vcenter | bottom
+export const alignNodes = (tree, ids, how) => {
+  const els = ids.map(id => tree.nodes[id]).filter(Boolean);
+  if (els.length < 2) return tree;
+  const l = Math.min(...els.map(e => num(e.x))), r = Math.max(...els.map(e => num(e.x) + num(e.w)));
+  const t = Math.min(...els.map(e => num(e.y))), b = Math.max(...els.map(e => num(e.y) + boxH(e)));
+  const nodes = { ...tree.nodes };
+  for (const e of els) {
+    const ch = how === "left" ? { x: l } : how === "right" ? { x: r - num(e.w) } : how === "hcenter" ? { x: Math.round((l + r - num(e.w)) / 2) }
+      : how === "top" ? { y: t } : how === "bottom" ? { y: b - boxH(e) } : { y: Math.round((t + b - boxH(e)) / 2) };
+    nodes[e.id] = { ...e, ...ch };
+  }
+  return { ...tree, nodes };
+};
+
+// Equal gaps between the elements along one axis ("h" or "v"), keeping the outer two in place
+export const distributeNodes = (tree, ids, axis) => {
+  const pos = axis === "h" ? "x" : "y", size = e => axis === "h" ? num(e.w) : boxH(e);
+  const els = ids.map(id => tree.nodes[id]).filter(Boolean).sort((a, b) => num(a[pos]) - num(b[pos]));
+  if (els.length < 3) return tree;
+  const first = els[0], last = els[els.length - 1];
+  const free = (num(last[pos]) + size(last)) - num(first[pos]) - els.reduce((a, e) => a + size(e), 0);
+  const gap = free / (els.length - 1);
+  const nodes = { ...tree.nodes };
+  let at = num(first[pos]);
+  for (const e of els) { nodes[e.id] = { ...e, [pos]: Math.round(at) }; at += size(e) + gap; }
+  return { ...tree, nodes };
+};
+
 export const getDepth = (tree, id) => {
   let d = 0, cur = findParent(tree, id);
   const seen = new Set([id]);
@@ -177,6 +241,11 @@ export const SAMPLE_DATA = {
   name: "ACC-SINV-2026-00001", customer_name: "Tagrit", posting_date: "22-02-2026", due_date: "24-03-2026",
   grand_total: "KES 12,500.00", net_total: "KES 10,775.86", tax_amount: "KES 1,724.14", currency: "KES",
   company: "EXAMPLE COMPANY LTD", company_address_display: "123 Example Road<br>Nairobi",
+  in_words: "KES Twelve Thousand Five Hundred only.", total_taxes_and_charges: "KES 1,724.14", total: "KES 10,775.86",
+  supplier_name: "Example Supplier Ltd", transaction_date: "22-02-2026", valid_till: "24-03-2026", schedule_date: "01-03-2026",
+  party_name: "Tagrit", paid_amount: "KES 12,500.00", mode_of_payment: "M-Pesa", reference_no: "SLK4H7XQ2P", reference_date: "22-02-2026",
+  employee_name: "Amina Otieno", designation: "Accountant", department: "Finance", start_date: "01-02-2026", end_date: "28-02-2026",
+  gross_pay: "KES 85,000.00", total_deduction: "KES 21,450.00", net_pay: "KES 63,550.00", owner: "Administrator", po_no: "PO-0042",
   address_display: "P.O. Box 00000-00100<br>Nairobi",
   items: [
     { idx: 1, item_name: "Hydro Filter (Small)", qty: 2, rate: "KES 4,500.00", amount: "KES 9,000.00" },
@@ -202,16 +271,19 @@ export const mkCircle = (x = 80, y = 80) => ({ id: uid(), type: "circle", childr
 export const mkTriangle = (x = 80, y = 80) => ({ id: uid(), type: "triangle", children: [], x, y, w: 100, h: 100, fill: "#d9d9d9", stroke: "transparent", strokeWidth: 0, opacity: 1, mode: "absolute", layout: "flex", flexDir: "column", justifyContent: "center", alignItems: "center", gap: 10, padding: 10 });
 export const mkPath = (x = 80, y = 80, points = []) => ({ id: uid(), type: "path", children: [], x, y, w: 100, h: 100, points, fill: "transparent", stroke: "#111111", strokeWidth: 2, opacity: 1 });
 export const mkTbl = (x = 40, y = 80) => ({ id: uid(), type: "table", children: [], x, y, w: 714, h: 200, childField: "items", columns: [{ id: uid(), label: "Description", field: "item_name", align: "left", width: "40%" }, { id: uid(), label: "Qty", field: "qty", align: "center", width: "12%" }, { id: uid(), label: "Rate", field: "rate", align: "right", width: "22%" }, { id: uid(), label: "Amount", field: "amount", align: "right", width: "26%" }], headerBg: "#f2f2f2", headerColor: "#111111", headerFontSize: 11, rowBg: "#ffffff", rowAltBg: "#ffffff", rowColor: "#222222", borderColor: "#cccccc", fontSize: 12, footerRows: [] });
-export const FACS = { text: mkT, container: mkC, image: mkI, rect: mkR, line: mkL, circle: mkCircle, triangle: mkTriangle, table: mkTbl, path: mkPath };
+// Both are drawn by the site when printing; `value` is a template expression unless `source` is "text"
+export const mkQR = (x = 80, y = 80) => ({ id: uid(), type: "qr", children: [], x, y, w: 96, h: 96, source: "expr", value: "doc.name" });
+export const mkBarcode = (x = 80, y = 80) => ({ id: uid(), type: "barcode", children: [], x, y, w: 220, h: 64, source: "expr", value: "doc.name", symbology: "code128", showText: true });
+export const FACS = { text: mkT, container: mkC, image: mkI, rect: mkR, line: mkL, circle: mkCircle, triangle: mkTriangle, table: mkTbl, path: mkPath, qr: mkQR, barcode: mkBarcode };
 
 // ── Initial data ──────────────────────────────────────────────────────────────
 // Nested boxes must not inherit mkC's 714x120 default size, and widths in a row
 // leave 2px for the editor's dashed container outline.
-const PLAIN = { fill: "transparent", stroke: "transparent", strokeWidth: 0, borderRadius: 0, padding: 0 };
-const ROW = { ...PLAIN, layout: "flex", flexDir: "row", flexWrap: "nowrap", justifyContent: "space-between", alignItems: "flex-start", gap: 0 };
-const COL = { ...PLAIN, layout: "flex", flexDir: "column", flexWrap: "nowrap", gap: 2 };
-const flowText = (content, o = {}) => ({ ...mkT(0, 0), content, w: "100%", h: 16, fontSize: 11, color: "#111111", padding: 0, _flow: true, ...o });
-const treeOf = (roots, all, settings) => ({ pages: [{ id: uid(), name: "Page 1", roots: roots.map(n => n.id), padding: 40 }], nodes: Object.fromEntries(all.map(n => [n.id, n])), ...(settings ? { settings } : {}) });
+export const PLAIN = { fill: "transparent", stroke: "transparent", strokeWidth: 0, borderRadius: 0, padding: 0 };
+export const ROW = { ...PLAIN, layout: "flex", flexDir: "row", flexWrap: "nowrap", justifyContent: "space-between", alignItems: "flex-start", gap: 0 };
+export const COL = { ...PLAIN, layout: "flex", flexDir: "column", flexWrap: "nowrap", gap: 2 };
+export const flowText = (content, o = {}) => ({ ...mkT(0, 0), content, w: "100%", h: 16, fontSize: 11, color: "#111111", padding: 0, _flow: true, ...o });
+export const treeOf = (roots, all, settings) => ({ pages: [{ id: uid(), name: "Page 1", roots: roots.map(n => n.id), padding: 40 }], nodes: Object.fromEntries(all.map(n => [n.id, n])), ...(settings ? { settings } : {}) });
 
 export function buildTree() {
   // Nested boxes must not inherit mkC's 714x120 default size, and widths in a row

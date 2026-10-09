@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { FRAPPE, frappeCall } from '../frappe.js';
 import { PRESET_DOCTYPES } from '../doctypes.js';
+import { DOC_TEMPLATES } from '../templates.js';
 import { Txt, Sec } from './atoms.jsx';
 
 // ── Error Guardian ────────────────────────────────────────────────────────────
@@ -66,13 +67,24 @@ export function NewDesignModal({ onCancel, onCreate }) {
 
   return (
     <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.5)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000, padding: 20 }}>
-      <div style={{ width: "100%", maxWidth: 480, background: "var(--b1)", border: "1px solid var(--bd)", borderRadius: "var(--r6)", overflow: "hidden", display: "flex", flexDirection: "column", maxHeight: "90vh", boxShadow: "0 8px 24px rgba(0,0,0,.25)" }}>
+      <div style={{ width: "100%", maxWidth: 520, background: "var(--b1)", border: "1px solid var(--bd)", borderRadius: "var(--r6)", overflow: "hidden", display: "flex", flexDirection: "column", maxHeight: "90vh", boxShadow: "0 8px 24px rgba(0,0,0,.25)" }}>
         <div style={{ padding: "12px 20px", borderBottom: "1px solid var(--bd)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
           <h2 style={{ fontSize: 14, fontWeight: 600, color: "var(--t0)" }}>New design</h2>
           <button onClick={onCancel} className="ib">×</button>
         </div>
 
         <div style={{ padding: 24, overflowY: "auto", flex: 1, display: "flex", flexDirection: "column", gap: 20 }}>
+          <Sec title="Ready-made design">
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 6 }}>
+              {DOC_TEMPLATES.map(t => (
+                <button key={t.id} onClick={() => onCreate(t.doctype, [], "DocType", t.id)} title={"For " + t.doctype} style={{ padding: "8px 8px", borderRadius: "var(--r4)", background: "var(--b2)", border: "1px solid var(--bd)", color: "var(--t0)", cursor: "pointer", textAlign: "left" }} onMouseEnter={e => { e.currentTarget.style.borderColor = "var(--ac)"; }} onMouseLeave={e => { e.currentTarget.style.borderColor = "var(--bd)"; }}>
+                  <div style={{ fontSize: 11, fontWeight: 600 }}>{t.label}</div>
+                  <div style={{ fontSize: 9, color: "var(--t2)", marginTop: 2, lineHeight: 1.4 }}>{t.note}</div>
+                </button>
+              ))}
+            </div>
+            <p style={{ fontSize: 10, color: "var(--t2)", marginTop: 6 }}>Opens straight away, ready to adjust. Or build your own below.</p>
+          </Sec>
           {FRAPPE && <Sec title={"Doctype on " + FRAPPE.site}>
             <div style={{ display: "flex", gap: 6 }}>
               <input className="pi" list="pf-site-doctypes" value={siteDt} onChange={e => setSiteDt(e.target.value)} onKeyDown={e => { if (e.key === "Enter") pickSiteDoctype(); }} placeholder="e.g. Sales Invoice" style={{ fontSize: 12 }} />
@@ -156,6 +168,27 @@ export function DesignHistoryModal({ onCancel, onLoad, onDelete, onLoadSite }) {
     setItems(history);
     if (FRAPPE) frappeCall("list_designs").then(list => setSite({ list: list || [] }), e => setSite({ error: e.message }));
   }, []);
+  // Earlier published versions of one format: { [format]: "loading" | { error } | { modified, versions } }
+  const [versions, setVersions] = useState({});
+  const toggleVersions = async (name) => {
+    if (versions[name]) { setVersions(v => ({ ...v, [name]: undefined })); return; }
+    setVersions(v => ({ ...v, [name]: "loading" }));
+    try {
+      const r = await frappeCall("list_versions", { print_format: name });
+      setVersions(v => ({ ...v, [name]: r }));
+    } catch (e) {
+      setVersions(v => ({ ...v, [name]: { error: e.message } }));
+    }
+  };
+  // Opens the older design as the working copy of the format; publishing it is what restores it
+  const openVersion = async (name, version, modified) => {
+    try {
+      const d = await frappeCall("get_version", { version });
+      onLoadSite(name, JSON.parse(d.design), modified);
+    } catch (e) {
+      setSite(s => ({ ...s, error: e.message }));
+    }
+  };
   const openSite = async (name) => {
     try {
       const d = await frappeCall("get_design", { print_format: name });
@@ -181,9 +214,26 @@ export function DesignHistoryModal({ onCancel, onLoad, onDelete, onLoadSite }) {
             {site.list && site.list.length === 0 && <div style={{ fontSize: 12, color: "var(--t2)" }}>None published yet. Use Publish in the toolbar.</div>}
             {site.list && <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
               {site.list.map(it => (
-                <div key={it.name} onClick={() => openSite(it.name)} style={{ padding: "8px 12px", background: "var(--b0)", border: "1px solid var(--bd)", borderRadius: "var(--r4)", cursor: "pointer" }}>
-                  <div style={{ fontSize: 13, fontWeight: 600, color: "var(--t0)" }}>{it.name}</div>
-                  <div style={{ fontSize: 10, color: "var(--t2)", marginTop: 2 }}>{it.doc_type || (it.report ? it.report + " (report)" : "")} · {it.modified}</div>
+                <div key={it.name} style={{ background: "var(--b0)", border: "1px solid var(--bd)", borderRadius: "var(--r4)" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 12px" }}>
+                    <div onClick={() => openSite(it.name)} style={{ flex: 1, cursor: "pointer" }}>
+                      <div style={{ fontSize: 13, fontWeight: 600, color: "var(--t0)" }}>{it.name}</div>
+                      <div style={{ fontSize: 10, color: "var(--t2)", marginTop: 2 }}>{it.doc_type || (it.report ? it.report + " (report)" : "")} · {it.modified}</div>
+                    </div>
+                    <button className={"bcb" + (versions[it.name] ? " on" : "")} onClick={() => toggleVersions(it.name)}>Earlier versions</button>
+                  </div>
+                  {versions[it.name] && <div style={{ borderTop: "1px solid var(--bd)", padding: "6px 12px 8px" }}>
+                    {versions[it.name] === "loading" && <div style={{ fontSize: 11, color: "var(--t2)" }}>Loading</div>}
+                    {versions[it.name].error && <div style={{ fontSize: 11, color: "var(--rd)" }}>{versions[it.name].error}</div>}
+                    {versions[it.name].versions && versions[it.name].versions.length === 0 && <div style={{ fontSize: 11, color: "var(--t2)" }}>No earlier versions yet. One is kept each time this format is published again.</div>}
+                    {(versions[it.name].versions || []).map(v => (
+                      <div key={v.name} style={{ display: "flex", alignItems: "center", gap: 8, padding: "3px 0", fontSize: 11, color: "var(--t1)" }}>
+                        <span style={{ flex: 1 }}>{v.creation} · replaced by {v.owner}</span>
+                        <button className="bcb" onClick={() => openVersion(it.name, v.name, versions[it.name].modified)}>Open</button>
+                      </div>
+                    ))}
+                    {(versions[it.name].versions || []).length > 0 && <div style={{ fontSize: 10, color: "var(--t2)", marginTop: 4 }}>Open one, then Update Print Format to put it back.</div>}
+                  </div>}
                 </div>
               ))}
             </div>}

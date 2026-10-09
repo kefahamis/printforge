@@ -1,11 +1,76 @@
 import { useState } from 'react';
-import { PAGE_SIZES, FONTS, getSettings, marginMm } from '../exporter.js';
-import { uid, dc, findParent, getDepth, mkT, mkC, mkI } from '../tree.js';
+import { PAGE_SIZES, CUSTOM_PAPERS, FONTS, getSettings, marginMm } from '../exporter.js';
+import { uid, dc, findParent, getDepth, isFree, mkT, mkC, mkI } from '../tree.js';
+import { BLOCKS } from '../templates.js';
 import { FRAPPE, frappeCall } from '../frappe.js';
 import { Num, Txt, RichTextEditor, Sel, CRow, Sec, Sdiv } from './atoms.jsx';
 
+const QR_ICON = (n, sw) => <svg width={n} height={n} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={sw}><rect x="3" y="3" width="7" height="7" /><rect x="14" y="3" width="7" height="7" /><rect x="3" y="14" width="7" height="7" /><path d="M14 14h3v3h-3zM20 14v1M17 20h4M20 17v1" /></svg>;
+const BARCODE_ICON = (n, sw) => <svg width={n} height={n} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={sw}><path d="M4 5v14M8 5v14M11 5v14M15 5v14M18 5v14M21 5v14" /></svg>;
+
+// ── Field picker ──────────────────────────────────────────────────────────────
+// Values that are not a field of the document itself
+const READY_MADE = [
+  { l: "Amount in words", v: '{{ frappe.utils.money_in_words(doc.grand_total, doc.currency) }}' },
+  { l: "Today's date", v: '{{ frappe.utils.format_date(frappe.utils.nowdate()) }}' },
+  { l: "Date and time printed", v: '{{ frappe.utils.format_datetime(frappe.utils.now_datetime()) }}' },
+  { l: "Printed by", v: '{{ frappe.get_fullname() }}' },
+  { l: "Company tax PIN", v: '{{ frappe.db.get_value("Company", doc.company, "tax_id") or "" }}' },
+  { l: "Company phone", v: '{{ frappe.db.get_value("Company", doc.company, "phone_no") or "" }}' },
+  { l: "Company email", v: '{{ frappe.db.get_value("Company", doc.company, "email") or "" }}' },
+  { l: "Number of item rows", v: '{{ doc.items | length }}' },
+];
+
+export function FieldPicker({ docFields, onInsert, report }) {
+  const [q, setQ] = useState("");
+  const [open, setOpen] = useState(null);
+  // Fields of linked doctypes, fetched from the site the first time one is opened
+  const [linked, setLinked] = useState({});
+  const needle = q.trim().toLowerCase();
+  const match = (label, name) => !needle || (label || "").toLowerCase().includes(needle) || (name || "").toLowerCase().includes(needle);
+  const canOpen = f => (f.isChild && (f.columns || []).length > 0) || (!!f.link && !!FRAPPE);
+  const toggle = f => {
+    setOpen(open === f.name ? null : f.name);
+    if (f.link && FRAPPE && !linked[f.link]) {
+      setLinked(l => ({ ...l, [f.link]: "loading" }));
+      frappeCall("get_doctype_fields", { doctype: f.link }).then(
+        fs => setLinked(l => ({ ...l, [f.link]: (fs || []).filter(x => !x.isChild) })),
+        e => setLinked(l => ({ ...l, [f.link]: { error: e.message } })));
+    }
+  };
+  const row = { display: "flex", alignItems: "center", width: "100%", padding: "4px 8px", border: "none", borderBottom: "1px solid var(--bd)", background: "transparent", color: "var(--t1)", cursor: "pointer", fontSize: 11, textAlign: "left", gap: 6 };
+  const sub = { ...row, paddingLeft: 20, fontSize: 10, background: "var(--b2)" };
+  const fields = docFields.filter(f => (report ? !f.isChild : true) && match(f.label, f.name));
+  const ready = report ? [] : READY_MADE.filter(r => match(r.l, ""));
+  return (
+    <div style={{ marginBottom: 12 }}>
+      <div className="sl">Insert a field</div>
+      <input className="pi" value={q} onChange={e => setQ(e.target.value)} placeholder="Search fields" style={{ marginBottom: 4 }} />
+      <div style={{ maxHeight: 190, overflowY: "auto", border: "1px solid var(--bd)", borderRadius: "var(--r4)", background: "var(--b0)" }}>
+        {fields.map(f => (
+          <div key={f.name}>
+            <div style={{ display: "flex" }}>
+              {f.isChild
+                ? <button style={{ ...row, cursor: canOpen(f) ? "pointer" : "default" }} onClick={() => canOpen(f) && toggle(f)} title="A table: its columns go in a block repeated for each row">{f.label || f.name}<span style={{ marginLeft: "auto", fontSize: 8, color: "var(--ac)" }}>rows</span></button>
+                : <button style={row} onClick={() => onInsert("{{ doc." + f.name + " }}")} title={"doc." + f.name}>{f.label || f.name}</button>}
+              {canOpen(f) && !f.isChild && <button className="ib" style={{ width: 22, height: "auto", border: "none", borderBottom: "1px solid var(--bd)", borderRadius: 0 }} onClick={() => toggle(f)} title={"Fields of the linked " + f.link}>{open === f.name ? "▾" : "▸"}</button>}
+            </div>
+            {open === f.name && f.isChild && (f.columns || []).map(c => <button key={c.name} style={sub} onClick={() => onInsert("{{ item." + c.name + " }}")} title={"item." + c.name}>{c.label || c.name}</button>)}
+            {open === f.name && f.link && (linked[f.link] === "loading" ? <div style={{ ...sub, cursor: "default" }}>Loading</div>
+              : linked[f.link]?.error ? <div style={{ ...sub, cursor: "default", color: "var(--rd)" }}>{linked[f.link].error}</div>
+                : (linked[f.link] || []).filter(x => x.name !== "name").map(x => <button key={x.name} style={sub} onClick={() => onInsert('{{ frappe.db.get_value("' + f.link + '", doc.' + f.name + ', "' + x.name + '") or "" }}')} title={f.link + " · " + x.name}>{x.label || x.name}</button>))}
+          </div>
+        ))}
+        {ready.length > 0 && <div style={{ padding: "4px 8px", fontSize: 9, fontWeight: 600, color: "var(--t2)", background: "var(--b2)", borderBottom: "1px solid var(--bd)" }}>READY-MADE</div>}
+        {ready.map(r => <button key={r.l} style={row} onClick={() => onInsert(r.v)} title={r.v}>{r.l}</button>)}
+        {fields.length + ready.length === 0 && <div style={{ padding: 8, fontSize: 10, color: "var(--t2)" }}>Nothing matches.</div>}
+      </div>
+    </div>
+  );
+}
+
 // ── Layer tree ────────────────────────────────────────────────────────────────
-export function LayerTree({ tree, selected, onSelect, depth, ids }) {
+export function LayerTree({ tree, selected, multi = [], onSelect, depth, ids }) {
   const [collapsed, setCollapsed] = useState({});
   const toggle = (id, e) => { e.stopPropagation(); setCollapsed(prev => ({ ...prev, [id]: !prev[id] })); };
 
@@ -18,6 +83,8 @@ export function LayerTree({ tree, selected, onSelect, depth, ids }) {
     triangle: <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M12 3L2 21H22L12 3Z" /></svg>,
     line: <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><line x1="4" y1="12" x2="20" y2="12" /></svg>,
     table: <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><rect x="3" y="3" width="18" height="18" rx="2" /><line x1="3" y1="9" x2="21" y2="9" /><line x1="3" y1="15" x2="21" y2="15" /><line x1="9" y1="3" x2="9" y2="21" /></svg>,
+    qr: QR_ICON(12, 2.5),
+    barcode: BARCODE_ICON(12, 2.5),
     page: <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z" /><polyline points="13 2 13 9 20 9" /></svg>
   };
 
@@ -30,7 +97,7 @@ export function LayerTree({ tree, selected, onSelect, depth, ids }) {
               <span style={{ fontSize: 10, color: "var(--ac)", width: 16, display: "flex", alignItems: "center", marginRight: 2 }}>{icons.page}</span>
               <span style={{ fontSize: 11, fontWeight: 700, color: "var(--t0)", flex: 1 }}>{page.name}</span>
             </div>
-            <LayerTree tree={tree} selected={selected} onSelect={onSelect} depth={1} ids={page.roots} />
+            <LayerTree tree={tree} selected={selected} multi={multi} onSelect={onSelect} depth={1} ids={page.roots} />
           </div>
         ))}
       </div>
@@ -41,7 +108,7 @@ export function LayerTree({ tree, selected, onSelect, depth, ids }) {
     <div style={{ display: "flex", flexDirection: "column" }}>
       {ids.map(id => {
         const el = tree.nodes[id]; if (!el) return null;
-        const isSel = selected === id;
+        const isSel = selected === id || multi.includes(id);
         const hasKids = el.type === "container" && (el.children || []).length > 0;
         const isCollapsed = collapsed[id];
         const color = dc(depth);
@@ -51,11 +118,12 @@ export function LayerTree({ tree, selected, onSelect, depth, ids }) {
           : el.type === "container" ? (el.label || "Group " + id.slice(-2))
             : el.type === "image" ? (el.label || `${el.w} × ${el.h}`)
               : el.type === "table" ? "Table (" + (el.columns || []).length + ")"
+                : el.type === "qr" ? "QR code" : el.type === "barcode" ? "Barcode"
                 : (el.type.charAt(0).toUpperCase() + el.type.slice(1));
 
         return (
           <div key={id}>
-            <div className={"li" + (isSel ? " sel" : "")} onClick={() => onSelect(id)} style={{ paddingLeft: depth * 14 + 10, position: "relative" }}>
+            <div className={"li" + (isSel ? " sel" : "")} onClick={e => onSelect(id, e)} style={{ paddingLeft: depth * 14 + 10, position: "relative" }}>
               {depth > 0 && <div style={{ position: "absolute", left: (depth - 1) * 14 + 16, top: 0, bottom: 0, width: 1, background: "var(--bd)", opacity: .3 }} />}
               <div style={{ width: 14, height: 14, display: "flex", alignItems: "center", justifyContent: "center", marginRight: 6, cursor: "pointer", opacity: hasKids ? 0.6 : 0 }} onClick={e => toggle(id, e)}>
                 <svg width="6" height="6" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="4" style={{ transform: isCollapsed ? "rotate(-90deg)" : "none", transition: "transform .15s" }}><polyline points="6 9 12 15 18 9" /></svg>
@@ -66,7 +134,7 @@ export function LayerTree({ tree, selected, onSelect, depth, ids }) {
               </span>
               {el.mode === "flow" && <span style={{ fontSize: 7, padding: "1px 3px", background: "var(--ad)", color: "var(--ac)", borderRadius: 2, flexShrink: 0, opacity: .7, marginLeft: 4 }}>{el.layout}</span>}
             </div>
-            {hasKids && !isCollapsed && <LayerTree tree={tree} selected={selected} onSelect={onSelect} depth={depth + 1} ids={el.children} />}
+            {hasKids && !isCollapsed && <LayerTree tree={tree} selected={selected} multi={multi} onSelect={onSelect} depth={depth + 1} ids={el.children} />}
           </div>
         );
       })}
@@ -104,7 +172,7 @@ export function Breadcrumb({ tree, selected, onSelect }) {
 }
 
 // ── Props panel ───────────────────────────────────────────────────────────────
-export function Props({ tree, selected, docFields, onUpdate, onDelete, onDup, onZOrder, onAddChild, onUpdateSettings, showRulers, setShowRulers, showGrid, setShowGrid, gridSize, setGridSize, activePageIdx, onUpdatePage, penMode, setPenMode, selPointIdx, setSelPointIdx }) {
+export function Props({ tree, selected, multi = [], onAlign, onDistribute, onDeleteMany, onDupMany, onCopy, docFields, onUpdate, onDelete, onDup, onZOrder, onAddChild, onUpdateSettings, showRulers, setShowRulers, showGrid, setShowGrid, gridSize, setGridSize, activePageIdx, onUpdatePage, penMode, setPenMode, selPointIdx, setSelPointIdx }) {
   const el = selected ? tree.nodes[selected] : null;
   const page = tree.pages[activePageIdx];
   const settings = getSettings(tree);
@@ -113,7 +181,32 @@ export function Props({ tree, selected, docFields, onUpdate, onDelete, onDup, on
   const up = (k, v) => onUpdatePage(activePageIdx, { [k]: v });
   const pid = selected ? findParent(tree, selected) : null;
   const dep = selected ? getDepth(tree, selected) : 0;
-  const TL = { text: "Text", container: "Container", image: "Image", rect: "Rectangle", circle: "Circle", triangle: "Triangle", line: "Line", table: "Table", path: "Path" };
+  const TL = { text: "Text", container: "Container", image: "Image", rect: "Rectangle", circle: "Circle", triangle: "Triangle", line: "Line", table: "Table", path: "Path", qr: "QR code", barcode: "Barcode" };
+
+  if (el && multi.length > 0) {
+    const ids = [selected, ...multi];
+    // Only freely placed elements in one container have positions that can be lined up
+    const canAlign = ids.every(id => isFree(tree, id)) && new Set(ids.map(id => findParent(tree, id))).size === 1;
+    const btn = (label, onClick, enabled = true) => <button key={label} className="bcb" disabled={!enabled} onClick={onClick} style={{ flex: 1, padding: "6px 4px", opacity: enabled ? 1 : .4 }}>{label}</button>;
+    return (
+      <div style={{ padding: "12px", overflowY: "auto", height: "100%" }}>
+        <div style={{ fontSize: 11, fontWeight: 600, color: "var(--t0)", marginBottom: 12, paddingBottom: 10, borderBottom: "1px solid var(--bd)" }}>{ids.length} elements selected</div>
+        <Sec title="Line up">
+          <div style={{ display: "flex", gap: 4, marginBottom: 4 }}>{[["Left", "left"], ["Centre", "hcenter"], ["Right", "right"]].map(([l, h]) => btn(l, () => onAlign(h), canAlign))}</div>
+          <div style={{ display: "flex", gap: 4 }}>{[["Top", "top"], ["Middle", "vcenter"], ["Bottom", "bottom"]].map(([l, h]) => btn(l, () => onAlign(h), canAlign))}</div>
+        </Sec>
+        <Sec title="Space evenly">
+          <div style={{ display: "flex", gap: 4 }}>{btn("Across", () => onDistribute("h"), canAlign && ids.length > 2)}{btn("Down", () => onDistribute("v"), canAlign && ids.length > 2)}</div>
+        </Sec>
+        {!canAlign && <p style={{ fontSize: 10, color: "var(--t2)", marginBottom: 12, lineHeight: 1.5 }}>Lining up needs elements placed freely inside the same container (Child Mode: Free). Elements in a flow layout are arranged by their container instead.</p>}
+        <Sdiv />
+        <Sec title="All selected">
+          <div style={{ display: "flex", gap: 4 }}>{btn("Copy", onCopy)}{btn("Duplicate", onDupMany)}{btn("Delete", onDeleteMany)}</div>
+        </Sec>
+        <p style={{ fontSize: 10, color: "var(--t2)", lineHeight: 1.5 }}>Shift+click adds or removes an element. Ctrl+C and Ctrl+V copy and paste, also between designs.</p>
+      </div>
+    );
+  }
 
   if (!el) return (
     <div style={{ padding: "12px", overflowY: "auto", height: "100%" }}>
@@ -129,8 +222,19 @@ export function Props({ tree, selected, docFields, onUpdate, onDelete, onDup, on
           </button>
         </div>
         <div className="prow" style={{ marginBottom: 12 }}>
-          <Sel label="Paper" value={settings.pageSize} onChange={v => onUpdateSettings({ pageSize: v })} options={Object.keys(PAGE_SIZES)} />
+          <Sel label="Paper" value={settings.pageSize} onChange={v => onUpdateSettings({ pageSize: v })} options={[...Object.keys(PAGE_SIZES), { v: "Custom", l: "Custom size" }]} />
           <Sel label="Orientation" value={settings.orientation} onChange={v => onUpdateSettings({ orientation: v })} options={["Portrait", "Landscape"]} />
+        </div>
+        {settings.pageSize === "Custom" && <div className="prow" style={{ marginBottom: 8 }}>
+          <Num label="Width" value={settings.customW} onChange={v => onUpdateSettings({ customW: v })} unit="mm" min={10} />
+          <Num label="Height" value={settings.customH} onChange={v => onUpdateSettings({ customH: v })} unit="mm" min={10} />
+        </div>}
+        <div className="pf" style={{ marginBottom: 12 }}>
+          <label>Receipts and labels</label>
+          <select className="ps" value="" onChange={e => { const c = CUSTOM_PAPERS[e.target.value]; if (c) onUpdateSettings({ pageSize: "Custom", orientation: "Portrait", customW: c.w, customH: c.h }, c.margin); }}>
+            <option value="">— pick a size —</option>
+            {CUSTOM_PAPERS.map((c, i) => <option key={c.label} value={i}>{c.label}</option>)}
+          </select>
         </div>
         <div className="prow">
           <Num label="Margins" value={page?.padding ?? 40} onChange={v => up("padding", v)} unit="px" min={0} />
@@ -149,6 +253,13 @@ export function Props({ tree, selected, docFields, onUpdate, onDelete, onDup, on
         {settings.printFor !== "Report" && <label style={{ display: "flex", alignItems: "flex-start", gap: 6, fontSize: 11, color: "var(--t1)", marginBottom: 12, cursor: "pointer" }}>
           <input type="checkbox" checked={!!settings.pageNumbers} onChange={e => onUpdateSettings({ pageNumbers: e.target.checked })} style={{ accentColor: "var(--ac)", marginTop: 2 }} />Page numbers at the bottom of every page
         </label>}
+        {settings.printFor !== "Report" && <>
+          <div className="prow" style={{ marginBottom: 4 }}>
+            <Sel label="Watermark" value={settings.watermark || ""} onChange={v => onUpdateSettings({ watermark: v })} options={[{ v: "", l: "None" }, { v: "status", l: "DRAFT / CANCELLED by status" }, { v: "text", l: "Your own text" }]} />
+          </div>
+          {settings.watermark === "text" && <div className="prow" style={{ marginBottom: 4 }}><Txt value={settings.watermarkText || ""} onChange={v => onUpdateSettings({ watermarkText: v })} ph="COPY" /></div>}
+          <p style={{ fontSize: 10, color: "var(--t2)", marginBottom: 12 }}>{settings.watermark === "status" ? "Printed faintly across every page of a draft or cancelled document, and not at all once it is submitted." : settings.watermark === "text" ? "Printed faintly across every page." : "Faint text across every page."}</p>
+        </>}
         {showGrid && (
           <div className="prow">
             <Num label="Grid Size" value={gridSize} onChange={setGridSize} unit="px" />
@@ -185,7 +296,7 @@ export function Props({ tree, selected, docFields, onUpdate, onDelete, onDup, on
       <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
         <div className="sl" style={{ margin: 0 }}>Shortcuts</div>
         <div style={{ width: "100%" }}>
-          {[["Ctrl+Z", "Undo"], ["Ctrl+Y", "Redo"], ["Arrows", "Nudge 1px"], ["Shift+Arrows", "Nudge 8px"], ["Ctrl+D", "Duplicate"], ["Del", "Delete"], ["Esc", "Select parent"]].map(([k, v]) => (
+          {[["Ctrl+Z", "Undo"], ["Ctrl+Y", "Redo"], ["Shift+click", "Select several"], ["Ctrl+C / X / V", "Copy, cut, paste"], ["Arrows", "Nudge 1px"], ["Shift+Arrows", "Nudge 8px"], ["Ctrl+D", "Duplicate"], ["Del", "Delete"], ["Esc", "Select parent"]].map(([k, v]) => (
             <div key={k} style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
               <span style={{ fontSize: 9, padding: "1px 5px", background: "var(--b4)", border: "1px solid var(--bm)", borderRadius: 3, fontFamily: "var(--mono)", color: "var(--t2)" }}>{k}</span>
               <span style={{ fontSize: 10, color: "var(--t2)" }}>{v}</span>
@@ -222,8 +333,39 @@ export function Props({ tree, selected, docFields, onUpdate, onDelete, onDup, on
       <Txt label="Show only if" value={el.showIf || ""} onChange={v => u("showIf", v || undefined)} mono ph={settings.printFor === "Report" ? "filters.company" : "doc.discount_amount"} />
       <p style={{ fontSize: 10, color: "var(--t2)", margin: "4px 0 0" }}>{el.showIf ? "Printed only when this is set or true for the document." : "Leave empty to always print it."}</p>
       <Sdiv />
-      {!el._flow && !isRoot && el.type !== "container" && <><Sec title="Layout"><div className="prow"><Num label="X" value={el.x} onChange={v => u("x", v)} unit="px" /><Num label="Y" value={el.y} onChange={v => u("y", v)} unit="px" /></div><div className="prow"><Num label="W" value={el.w} onChange={v => u("w", v)} unit="px" /><Num label="H" value={el.h} onChange={v => u("h", v)} unit="px" /></div></Sec><Sdiv /></>}
-      {isRoot && <><Sec title="Layout"><div className="prow"><Num label="W" value={el.w} onChange={v => u("w", v)} unit="px" /><Num label="H" value={el.h} onChange={v => u("h", v)} unit="px" /></div></Sec><Sdiv /></>}
+      {el.type === "container" && settings.printFor !== "Report" && <>
+        <Txt label="Repeat for each row of" value={el.repeatFor || ""} onChange={v => u("repeatFor", v || undefined)} mono ph="items" list="pf-child-tables-rep" />
+        <datalist id="pf-child-tables-rep">{docFields.filter(f => f.isChild).map(f => <option key={f.name} value={f.name}>{f.label}</option>)}</datalist>
+        <p style={{ fontSize: 10, color: "var(--t2)", margin: "4px 0 0" }}>{el.repeatFor ? "Printed once per row. Inside it, use {{ item.field }} for that row's values." : "Leave empty to print it once. Used for labels and per-item blocks."}</p>
+        {el.repeatFor && <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11, color: "var(--t1)", marginTop: 6, cursor: "pointer" }}>
+          <input type="checkbox" checked={!!el.breakAfter} onChange={e => u("breakAfter", e.target.checked || undefined)} style={{ accentColor: "var(--ac)" }} />Start a new page (or label) after each one
+        </label>}
+        <Sdiv />
+      </>}
+      {(el.type === "qr" || el.type === "barcode") && <>
+        <Sec title="What it encodes">
+          <div style={{ display: "flex", gap: 4, marginBottom: 8 }}>
+            {[{ v: "expr", l: "A field" }, { v: "text", l: "Fixed text" }].map(o => (
+              <button key={o.v} onClick={() => u("source", o.v)} style={{ flex: 1, padding: "6px 4px", border: "1px solid " + ((el.source || "expr") === o.v ? "var(--ac)" : "var(--bm)"), borderRadius: "var(--r4)", background: (el.source || "expr") === o.v ? "var(--ad)" : "var(--b3)", color: (el.source || "expr") === o.v ? "var(--ac)" : "var(--t1)", cursor: "pointer", fontSize: 11, fontWeight: 600 }}>{o.l}</button>
+            ))}
+          </div>
+          <Txt value={el.value || ""} onChange={v => u("value", v)} mono={el.source !== "text"} ph={el.source === "text" ? "https://example.com" : "doc.name"} list={el.source === "text" ? undefined : "pf-code-fields"} />
+          <datalist id="pf-code-fields">{docFields.filter(f => !f.isChild).map(f => <option key={f.name} value={"doc." + f.name}>{f.label}</option>)}</datalist>
+          <p style={{ fontSize: 10, color: "var(--t2)", margin: "4px 0 0", lineHeight: 1.5 }}>{el.source === "text" ? "The same on every document." : el.type === "qr" ? "A field of the document, such as the one holding its tax authority (eTIMS) link. Nothing is printed while it is empty." : "A field of the document. Inside a block repeated per row, use item.item_code. Nothing is printed while it is empty."}</p>
+        </Sec>
+        <Sdiv />
+        {el.type === "barcode" && <Sec title="Barcode">
+          <Sel label="Type" value={el.symbology || "code128"} onChange={v => u("symbology", v)} options={[{ v: "code128", l: "Code 128 (letters and numbers)" }, { v: "code39", l: "Code 39" }, { v: "ean13", l: "EAN-13 (12 or 13 digits)" }, { v: "ean8", l: "EAN-8 (7 or 8 digits)" }, { v: "upca", l: "UPC-A (11 or 12 digits)" }]} />
+          <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11, color: "var(--t1)", marginTop: 8, cursor: "pointer" }}>
+            <input type="checkbox" checked={el.showText !== false} onChange={e => u("showText", e.target.checked)} style={{ accentColor: "var(--ac)" }} />Print the value under the bars
+          </label>
+        </Sec>}
+        <Sec title="Size"><div className="prow"><Num label="W" value={el.w} onChange={v => u("w", v)} unit="px" min={20} /><Num label="H" value={el.h} onChange={v => u("h", v)} unit="px" min={20} /></div>
+          {el.type === "qr" && <p style={{ fontSize: 10, color: "var(--t2)", margin: "4px 0 0" }}>Printed square, at the smaller of the two. About 90 px (24 mm) or more scans reliably.</p>}
+        </Sec>
+      </>}
+      {!el._flow && !isRoot && el.type !== "container" && el.type !== "qr" && el.type !== "barcode" && <><Sec title="Layout"><div className="prow"><Num label="X" value={el.x} onChange={v => u("x", v)} unit="px" /><Num label="Y" value={el.y} onChange={v => u("y", v)} unit="px" /></div><div className="prow"><Num label="W" value={el.w} onChange={v => u("w", v)} unit="px" /><Num label="H" value={el.h} onChange={v => u("h", v)} unit="px" /></div></Sec><Sdiv /></>}
+      {isRoot && el.type !== "qr" && el.type !== "barcode" && <><Sec title="Layout"><div className="prow"><Num label="W" value={el.w} onChange={v => u("w", v)} unit="px" /><Num label="H" value={el.h} onChange={v => u("h", v)} unit="px" /></div></Sec><Sdiv /></>}
 
       {el.type === "container" && <>
         <Sec title="Size"><div className="prow"><Num label="W" value={el.w} onChange={v => u("w", v)} unit="px" /><Num label="H" value={el.h} onChange={v => u("h", v)} unit="px" /></div></Sec><Sdiv />
@@ -256,7 +398,7 @@ export function Props({ tree, selected, docFields, onUpdate, onDelete, onDup, on
           <Sdiv />
           <Sec title="Add Children" badge="nested">
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 4 }}>
-              {[["text", "Text"], ["container", "Container"], ["image", "Image"], ["rect", "Rect"], ["circle", "Circle"], ["triangle", "Triangle"], ["line", "Line"], ["path", "Path"]].map(([t, l]) => (
+              {[["text", "Text"], ["container", "Container"], ["image", "Image"], ["table", "Table"], ["qr", "QR code"], ["barcode", "Barcode"], ["rect", "Rect"], ["circle", "Circle"], ["triangle", "Triangle"], ["line", "Line"]].map(([t, l]) => (
                 <button key={t} onClick={() => onAddChild(selected, t)} style={{ padding: "7px 4px", border: "1px dashed var(--bm)", borderRadius: "var(--r4)", background: "var(--b3)", color: "var(--t1)", cursor: "pointer", fontSize: 11 }} onMouseEnter={e => { e.currentTarget.style.borderColor = "var(--ac)"; e.currentTarget.style.color = "var(--ac)"; }} onMouseLeave={e => { e.currentTarget.style.borderColor = "var(--bm)"; e.currentTarget.style.color = "var(--t1)"; }}> + {l}</button>
               ))}
             </div>
@@ -308,13 +450,7 @@ export function Props({ tree, selected, docFields, onUpdate, onDelete, onDup, on
             <Txt value={el.content} onChange={v => u("content", v)} mono rows={4} />
           )}
         </Sec>
-        {docFields.filter(f => !f.isChild).length > 0 && <div style={{ marginBottom: 12 }}>
-          <div className="sl">Insert Variable</div>
-          <select className="ps" onChange={e => { if (e.target.value) { u("content", el.content + (el.isRich ? " {{ doc." + e.target.value + " }} " : "{{ doc." + e.target.value + " }}")); e.target.value = ""; } }} defaultValue="">
-            <option value="">— pick field —</option>
-            {docFields.filter(f => !f.isChild).map(f => <option key={f.name} value={f.name}>{f.label || f.name}</option>)}
-          </select>
-        </div>}
+        <FieldPicker docFields={docFields} report={settings.printFor === "Report"} onInsert={v => u("content", (el.content || "") + (el.isRich ? " " + v + " " : v))} />
         {!el.isRich && <>
           <Sdiv />
           <Sec title="Typography">
@@ -473,6 +609,8 @@ export const TOOLS = [
   { type: "container", label: "Container", icon: <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="2" y="3" width="20" height="18" rx="2" /><line x1="2" y1="9" x2="22" y2="9" /></svg> },
   { type: "table", label: "Table", icon: <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="3" width="18" height="18" rx="2" /><line x1="3" y1="9" x2="21" y2="9" /><line x1="3" y1="15" x2="21" y2="15" /><line x1="9" y1="3" x2="9" y2="21" /></svg> },
   { type: "image", label: "Image", icon: <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="3" width="18" height="18" rx="2" /><circle cx="8.5" cy="8.5" r="1.5" /><polyline points="21 15 16 10 5 21" /></svg> },
+  { type: "qr", label: "QR code", icon: QR_ICON(13, 2) },
+  { type: "barcode", label: "Barcode", icon: BARCODE_ICON(13, 2) },
 ];
 
 export const SHAPE_TOOLS = [
@@ -514,7 +652,7 @@ export const COMPONENT_TEMPLATES = [
   }
 ];
 
-export function LeftPanel({ onAdd, onAddTemplate, doctype, setDoctype, docFields, setDocFields, tree, selected, onSelect, penMode, setPenMode, assets, setAssets, onSetTrace }) {
+export function LeftPanel({ onAdd, onAddTemplate, doctype, setDoctype, docFields, setDocFields, tree, selected, multi, onSelect, penMode, setPenMode, assets, setAssets, onSetTrace }) {
   const [tab, setTab] = useState("insert");
   const [nf, setNf] = useState({ name: "", label: "", isChild: false });
   const [siteFields, setSiteFields] = useState(null); // null | "loading" | { ok, msg }
@@ -562,11 +700,11 @@ export function LeftPanel({ onAdd, onAddTemplate, doctype, setDoctype, docFields
               </button>
             ))}
           </div>
-          <div className="sl" style={{ paddingInline: 4, marginBottom: 6 }}>Templates</div>
+          <div className="sl" style={{ paddingInline: 4, marginBottom: 6 }}>Blocks</div>
           <div style={{ marginBottom: 12 }}>
-            {COMPONENT_TEMPLATES.map(t => (
+            {[...COMPONENT_TEMPLATES, ...BLOCKS].map(t => (
               <button key={t.label} onClick={() => onAddTemplate(t.create)} style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "8px 10px", marginBottom: 3, border: "1px solid var(--bd)", borderRadius: "var(--r4)", background: "var(--b2)", color: "var(--t1)", cursor: "pointer", fontSize: 11, transition: "all .12s" }} onMouseEnter={e => { e.currentTarget.style.borderColor = "var(--ac)"; e.currentTarget.style.color = "var(--ac)"; }} onMouseLeave={e => { e.currentTarget.style.borderColor = "var(--bd)"; e.currentTarget.style.color = "var(--t1)"; }}>
-                <span style={{ fontSize: 13, color: "var(--t2)" }}>{t.icon}</span>{t.label}
+                <span style={{ fontSize: 13, color: "var(--t2)", width: 16, textAlign: "center", flexShrink: 0 }}>{t.icon}</span>{t.label}
               </button>
             ))}
           </div>
@@ -586,7 +724,7 @@ export function LeftPanel({ onAdd, onAddTemplate, doctype, setDoctype, docFields
             <div style={{ flex: 1 }} />
             <span style={{ fontSize: 9, color: "var(--t2)", opacity: .6 }}>{Object.keys(tree.nodes).length}</span>
           </div>
-          <LayerTree tree={tree} selected={selected} onSelect={onSelect} depth={0} />
+          <LayerTree tree={tree} selected={selected} multi={multi} onSelect={onSelect} depth={0} />
         </div>}
         {tab === "assets" && <div style={{ padding: 12 }}>
           <div className="sl" style={{ marginBottom: 8 }}>Images</div>

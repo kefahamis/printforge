@@ -122,3 +122,29 @@ export function Sec({ title, children, badge }) {
   );
 }
 export const Sdiv = () => <div className="sdiv" />;
+
+// ── Stand-ins for codes the site draws when printing ──────────────────────────
+// The real symbol depends on the document, so the canvas shows a fixed pattern of the right shape.
+const QR_N = 25;
+const qrDark = (x, y) => {
+  const finder = (cx, cy) => { const dx = Math.abs(x - cx), dy = Math.abs(y - cy), d = Math.max(dx, dy); return d <= 4 ? (d === 4 ? 0 : d === 3 || d <= 1 ? 1 : 0) : null; };
+  for (const [cx, cy] of [[3, 3], [QR_N - 4, 3], [3, QR_N - 4]]) { const f = finder(cx, cy); if (f !== null) return f; }
+  return ((x * 7 + y * 13 + ((x * y) % 5) + (x ^ y)) % 3) === 0 ? 1 : 0;
+};
+export function FakeQR({ size }) {
+  const cells = [];
+  for (let y = 0; y < QR_N; y++) for (let x = 0; x < QR_N; x++) if (qrDark(x, y)) cells.push("M" + x + " " + y + "h1v1h-1z");
+  return <svg width={size} height={size} viewBox={"0 0 " + QR_N + " " + QR_N} shapeRendering="crispEdges" style={{ display: "block" }}><path d={cells.join("")} fill="#111111" /></svg>;
+}
+export function FakeBars({ w, h, text }) {
+  const bars = [];
+  let x = 0;
+  for (let i = 0; x < 100; i++) { const bw = 1 + ((i * 7 + 3) % 3); if (i % 2 === 0) bars.push("M" + x + " 0h" + bw + "v10h-" + bw + "z"); x += bw; }
+  const th = text ? 13 : 0;
+  return (
+    <div style={{ width: w, textAlign: "center" }}>
+      <svg width={w} height={Math.max(4, h - th)} viewBox={"0 0 " + x + " 10"} preserveAspectRatio="none" shapeRendering="crispEdges" style={{ display: "block" }}><path d={bars.join("")} fill="#111111" /></svg>
+      {text ? <div style={{ fontSize: 10, lineHeight: "13px", fontFamily: "var(--mono)", color: "#111111", overflow: "hidden", whiteSpace: "nowrap" }}>{text}</div> : null}
+    </div>
+  );
+}

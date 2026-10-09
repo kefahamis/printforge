@@ -6,14 +6,35 @@
 // from a top-level `.print-format { ... }` CSS rule. The output here is built for that.
 
 export const PAGE_SIZES = { A4: [794, 1123], A5: [559, 794], A3: [1123, 1587], Letter: [816, 1056], Legal: [816, 1344] };
-export const DEFAULT_SETTINGS = { pageSize: "A4", orientation: "Portrait", letterHead: false, pageNumbers: false, statusHeading: true, font: "", printFor: "DocType" };
+// Receipt rolls and label stock have no named size, so they print as a custom size in mm.
+// `margin` is the page margin in px that suits paper this small.
+export const CUSTOM_PAPERS = [
+  { label: "Receipt 80 mm", w: 80, h: 200, margin: 12 },
+  { label: "Receipt 58 mm", w: 58, h: 200, margin: 8 },
+  { label: "Label 100 x 150 mm", w: 100, h: 150, margin: 12 },
+  { label: "Label 100 x 50 mm", w: 100, h: 50, margin: 8 },
+  { label: "Label 50 x 25 mm", w: 50, h: 25, margin: 4 },
+];
+export const DEFAULT_SETTINGS = { pageSize: "A4", orientation: "Portrait", letterHead: false, pageNumbers: false, statusHeading: true, font: "", printFor: "DocType", customW: 80, customH: 200, watermark: "", watermarkText: "" };
+const mmToPx = mm => Math.round(mm * 96 / 25.4);
+const customMm = s => {
+  const w = Math.max(10, Number(s.customW) || 80), h = Math.max(10, Number(s.customH) || 200);
+  return s.orientation === "Landscape" ? { w: h, h: w } : { w, h };
+};
 // "" means the site's print font
 export const FONTS = ["", "Arial, Helvetica, sans-serif", "Verdana, Geneva, sans-serif", "Tahoma, Geneva, sans-serif", "Georgia, serif", '"Times New Roman", Times, serif', '"Courier New", Courier, monospace'];
 export const getSettings = tree => ({ ...DEFAULT_SETTINGS, ...(tree?.settings || {}) });
 export const pageDims = tree => {
   const s = getSettings(tree);
+  if (s.pageSize === "Custom") { const mm = customMm(s); return { w: mmToPx(mm.w), h: mmToPx(mm.h) }; }
   const [w, h] = PAGE_SIZES[s.pageSize] || PAGE_SIZES.A4;
   return s.orientation === "Landscape" ? { w: h, h: w } : { w, h };
+};
+export const paperLabel = tree => {
+  const s = getSettings(tree);
+  if (s.pageSize !== "Custom") return s.pageSize + " " + s.orientation.toLowerCase();
+  const mm = customMm(s);
+  return mm.w + " x " + mm.h + " mm";
 };
 
 // Used for the canvas and standalone files when no site font is known.
@@ -47,6 +68,8 @@ export const formatRefs = (s, obj = "doc") => (s || "").replace(
   new RegExp("\\{\\{\\s*" + obj + "\\.([A-Za-z_]\\w*)\\s*\\}\\}", "g"),
   (m, f) => RAW_FIELDS.has(f) ? m : `{{ ${obj}.get_formatted("${f}"${obj === "doc" ? "" : ", doc"}) }}`
 );
+// Text may also sit inside a block repeated for each row of a child table, where the row is `item`
+const formatAllRefs = s => formatRefs(formatRefs(s), "item");
 const formatExpr = expr => {
   const m = /^\s*doc\.([A-Za-z_]\w*)\s*$/.exec(expr || "");
   return m && !RAW_FIELDS.has(m[1]) ? `doc.get_formatted("${m[1]}")` : (expr || "").trim();
@@ -66,10 +89,20 @@ function renderNode(tree, id, indent, extraStyle = "", inFlow = false, report = 
   const el = tree.nodes[id]; if (!el) return "";
   const html = renderElement(tree, id, indent, extraStyle, inFlow, report);
   const cond = (el.showIf || "").replace(/\{\{|\}\}|\{%|%\}/g, "").trim();
-  if (!cond || !html) return html;
   const p = "  ".repeat(indent);
-  return `${p}{% if ${cond} %}\n${html}\n${p}{% endif %}`;
+  const shown = !cond || !html ? html : `${p}{% if ${cond} %}\n${html}\n${p}{% endif %}`;
+  // A block repeated for each row of a child table, e.g. one label per item. Reports have no `doc`.
+  const each = report ? "" : (el.repeatFor || "").replace(/[^A-Za-z0-9_]/g, "");
+  if (!each || !shown) return shown;
+  const gap = el.breakAfter ? `\n${p}{% if not loop.last %}<div style="page-break-after:always;"></div>{% endif %}` : "";
+  return `${p}{% for item in doc.${each} %}\n${shown}${gap}\n${p}{% endfor %}`;
 }
+
+// The value a QR code or barcode encodes, as a template expression
+export const codeExpr = el => {
+  if (el.source === "text") return JSON.stringify(String(el.value || ""));
+  return (el.value || "").replace(/\{\{|\}\}/g, "").trim() || "doc.name";
+};
 
 function renderElement(tree, id, indent, extraStyle = "", inFlow = false, report = false) {
   const el = tree.nodes[id]; if (!el) return "";
@@ -77,7 +110,7 @@ function renderElement(tree, id, indent, extraStyle = "", inFlow = false, report
   const isRoot = tree.pages.some(p => (p.roots || []).includes(id));
   const isFlow = isRoot || inFlow || el.mode === "flow" || el._flow;
 
-  const isShape = ["rect", "circle", "triangle", "line", "image", "path"].includes(el.type);
+  const isShape = ["rect", "circle", "triangle", "line", "image", "path", "qr", "barcode"].includes(el.type);
   const pos = isFlow
     ? ("position:relative;" + (isRoot && !isShape ? "width:100%;" : "width:" + cssLen(el.w) + ";"))
     : "position:absolute;left:" + (el.x || 0) + "px;top:" + (el.y || 0) + "px;width:" + cssLen(el.w) + ";";
@@ -136,7 +169,7 @@ function renderElement(tree, id, indent, extraStyle = "", inFlow = false, report
     }).join("\n");
   }
 
-  if (el.type === "text") return p + '<div style="' + base + 'min-height:' + el.h + 'px;' + (el.isRich ? '' : 'font-size:' + el.fontSize + 'px;font-weight:' + el.fontWeight + ';color:' + el.color + ';text-align:' + el.align + ';font-style:' + (el.italic ? "italic" : "normal") + ';line-height:' + el.lineHeight + ';white-space:pre-wrap;word-wrap:break-word;') + 'background:' + el.bg + ';padding:' + cssLen(el.padding) + ';border-radius:' + el.borderRadius + 'px;">' + (el.isRich ? (el.content || "") : translatable(el.content) ? tr(el.content, report) : report ? (el.content || "") : formatRefs(el.content)) + '</div>';
+  if (el.type === "text") return p + '<div style="' + base + 'min-height:' + el.h + 'px;' + (el.isRich ? '' : 'font-size:' + el.fontSize + 'px;font-weight:' + el.fontWeight + ';color:' + el.color + ';text-align:' + el.align + ';font-style:' + (el.italic ? "italic" : "normal") + ';line-height:' + el.lineHeight + ';white-space:pre-wrap;word-wrap:break-word;') + 'background:' + el.bg + ';padding:' + cssLen(el.padding) + ';border-radius:' + el.borderRadius + 'px;">' + (el.isRich ? (el.content || "") : translatable(el.content) ? tr(el.content, report) : report ? (el.content || "") : formatAllRefs(el.content)) + '</div>';
 
   if (el.type === "rect") {
     const border = (el.strokeWidth || 0) + 'px ' + (el.style || "solid") + ' ' + (el.stroke || "transparent");
@@ -169,6 +202,16 @@ function renderElement(tree, id, indent, extraStyle = "", inFlow = false, report
     // Report formats are rendered in the browser, where server lookups do not exist
     if (report && /frappe\.db\./.test(expr)) return p + "<!-- image skipped: " + (el.label || "logo") + " uses a server lookup, which report formats cannot run -->";
     return p + '{%if ' + (expr || "True") + '%}\n' + p + '<img src="' + (el.jinjaExpr || "") + '" style="' + base + 'height:' + el.h + 'px;object-fit:' + fit + ';" />\n' + p + '{%endif%}';
+  }
+
+  if (el.type === "qr" || el.type === "barcode") {
+    // Drawn on the server by the app's own template functions (printforge/jinja.py)
+    if (report) return p + "<!-- " + el.type + " skipped: report formats are filled in the browser, which cannot draw it -->";
+    const expr = codeExpr(el);
+    const call = el.type === "qr"
+      ? `printforge_qr(${expr}, ${Math.round(Math.min(el.w, el.h))})`
+      : `printforge_barcode(${expr}, ${JSON.stringify(el.symbology || "code128")}, ${Math.round(el.w)}, ${Math.round(el.h)}, ${el.showText === false ? 0 : 1})`;
+    return p + `{% if ${expr} %}<div style="${base}height:${el.h}px;overflow:hidden;">{{ ${call} }}</div>{% endif %}`;
   }
 
   if (el.type === "table") {
@@ -247,9 +290,28 @@ export function toPrintFormatHtml(tree, opts = {}) {
       // With only the site letter head in use, Frappe sizes that margin for it
       ...(headerIds.length || !letterHead ? [`margin-top: ${topMm}mm`] : []),
       ...(ownFooter ? [`margin-bottom: ${Math.round(bottomMm * 10) / 10}mm`] : letterHead ? [] : [`margin-bottom: ${mm}mm`]),
-      ...(s.pageSize !== "A4" ? [`page-size: ${s.pageSize}`] : []),
-      ...(s.orientation === "Landscape" ? ["orientation: Landscape"] : []),
+      // A custom size is given already turned, so it carries no orientation of its own. Only
+      // the two lengths are written: they override the site's paper size in the PDF step,
+      // which rejects "Custom" as a size name.
+      ...(s.pageSize === "Custom"
+        ? [`page-width: ${customMm(s).w}mm`, `page-height: ${customMm(s).h}mm`]
+        : [...(s.pageSize !== "A4" ? [`page-size: ${s.pageSize}`] : []), ...(s.orientation === "Landscape" ? ["orientation: Landscape"] : [])]),
     ].join("; ");
+
+    // The PDF step does not repeat fixed elements, so the watermark is laid down once per
+    // printed page instead: a clipped layer behind each design page, with a mark every page
+    // height. Marks past the end of the content are cut off by the layer, so a short
+    // document is given enough height to show its one mark.
+    const wmSize = Math.max(18, Math.round(w / 8));
+    const wmEach = pageContentHeight(tree, opts);
+    const wmLayer = text => `<div class="pf-wms">${Array.from({ length: 30 }, (_, k) => `<div class="pf-wm" style="top:${Math.round((k + 0.3) * wmEach)}px;">${text}</div>`).join("")}</div>\n`;
+    let wmSet = "", watermark = "";
+    if (!report && s.watermark === "status") {
+      wmSet = `{%- set pf_wm = _("DRAFT") if (doc.meta.is_submittable and doc.docstatus == 0) else (_("CANCELLED") if doc.docstatus == 2 else "") %}\n`;
+      watermark = `{% if pf_wm %}${wmLayer("{{ pf_wm }}").trimEnd()}{% endif %}\n`;
+    } else if (!report && s.watermark === "text" && (s.watermarkText || "").trim()) {
+      watermark = wmLayer(tr(s.watermarkText.trim()));
+    }
 
     const css = `
   .print-format { ${pdfRule}; }
@@ -264,7 +326,10 @@ export function toPrintFormatHtml(tree, opts = {}) {
   .pf-page, .pf-rep { position: relative; width: ${w - pad * 2}px; max-width: 100%; }
   .wrapper > .pf-rep-head { margin-top: -15mm; padding-top: ${pad}px; }
   .wrapper > .pf-rep-foot { margin-top: -15mm; padding-top: ${footGapMm}mm; }
-`;
+${watermark ? `  .pf-page { min-height: ${Math.round(wmEach * 0.7)}px; }
+  .pf-wms { position: absolute; top: 0; left: 0; right: 0; bottom: 0; overflow: hidden; z-index: 0; }
+  .pf-wm { position: absolute; left: 0; width: 100%; text-align: center; white-space: nowrap; font-size: ${wmSize}px; line-height: 1; font-weight: 700; letter-spacing: ${Math.round(wmSize / 12)}px; color: rgba(0,0,0,.09); -webkit-transform: rotate(-30deg); transform: rotate(-30deg); }
+` : ""}`;
 
     const roots = ids => ids.map(id => renderNode(tree, id, 1, "", true, report)).join("\n");
     const pageNo = `<p class="visible-pdf" style="text-align:center;font-size:9px;line-height:${PAGE_NO_HEIGHT}px;color:#555555;">{{ _("Page {0} of {1}").format('<span class="page"></span>', '<span class="topage"></span>') }}</p>`;
@@ -312,9 +377,9 @@ export function toPrintFormatHtml(tree, opts = {}) {
     const last = tree.pages.length - 1;
     const pagesHtml = tree.pages.map((page, i) => {
       const rootsHtml = roots((page.roots || []).filter(id => !repeated.has(id)));
-      return `<div class="pf-page"${i < last ? ' style="page-break-after:always;"' : ""}>\n${rootsHtml}\n</div>`;
+      return `<div class="pf-page"${i < last ? ' style="page-break-after:always;"' : ""}>\n${watermark}${rootsHtml}\n</div>`;
     }).join("\n");
-    return `<style>${css}</style>\n<div class="pf-doc">\n${head}${status}${pagesHtml}${foot}\n</div>`;
+    return `<style>${css}</style>\n<div class="pf-doc">\n${wmSet}${head}${status}${pagesHtml}${foot}\n</div>`;
   } catch (e) {
     console.error("Jinja generation error:", e);
     return "Error generating Jinja template. Please check console.";

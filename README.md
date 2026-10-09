@@ -24,11 +24,20 @@ bench build --app printforge
 bench restart                            # production; `bench start` picks it up in development
 ```
 
-Installing adds one hidden custom field, `printforge_design`, to the Print Format
-doctype. It holds the editable design so a published format can be reopened later.
+Installing does three things to the site:
 
-Then open `/app/printforge` on the site. It needs write access to Print Format, which
-by default means the System Manager role.
+- adds one hidden custom field, `printforge_design`, to the Print Format doctype. It
+  holds the editable design so a published format can be reopened later;
+- creates a **Print Designer** role that can read, create and change Print Formats, so
+  someone can design formats without being a System Manager. This is granted once; if
+  you later narrow or remove it in the Role Permission Manager, it stays that way;
+- installs `python-barcode`, which draws barcodes when a document is printed. If you
+  copied the app in by hand rather than with `bench get-app`, run
+  `bench setup requirements`.
+
+Then open `/app/printforge` on the site, or use the PrintForge tile on the launcher. It
+needs write access to Print Format: the System Manager or Print Designer role. The tile
+is only shown to people who have it.
 
 ### Check after the first install
 
@@ -46,13 +55,21 @@ out as designed. What has not been run is the app inside a real site, so confirm
 5. If you make a report format, pick it in the report's Print dialog and check the
    rows and totals.
 
-Frappe versions newer than 15 have not been checked. Newer branches add a Chrome-based
-PDF generator; the layout here is built for wkhtmltopdf.
+Items 1 to 3 have since been run on a Frappe 16.36 / ERPNext 16.37 site with
+wkhtmltopdf, along with a three-page document with a repeating header, footer and page
+numbers, QR codes, barcodes, custom receipt and label paper, the watermark, the
+ready-made designs for Sales Invoice, Quotation, Purchase Order, Payment Entry and Item,
+and version history. Report formats (item 5), and the Delivery Note and Salary Slip
+designs with a real document, have not.
+
+Newer Frappe branches add a Chrome-based PDF generator; the layout here is built for
+wkhtmltopdf.
 
 ## Using it
 
-1. **New** — type any doctype on the site and load its fields, pick a report, or
-   start from a preset.
+1. **New** — pick a ready-made design (tax invoice, quotation, purchase order, delivery
+   note, payment receipt, payslip, till receipt, item label, carton labels), or type any
+   doctype on the site and load its fields, pick a report, or start from a preset.
 2. Design the page. Set paper, margins and letter head in the Page panel (shown when
    nothing is selected).
 3. **Preview** fills it with sample data; enter a document name there to render a
@@ -60,6 +77,8 @@ PDF generator; the layout here is built for wkhtmltopdf.
 4. **Publish** — name the Print Format, optionally make it the default for the
    doctype. After the first publish the button becomes **Update Print Format**.
 5. **History** lists the formats published from PrintForge; click one to reopen it.
+   **Earlier versions** shows the designs it had before each republish (the last 15 are
+   kept). Open one and press **Update Print Format** to put it back.
 
 Publishing will not overwrite a standard Print Format, or one that was not made in
 PrintForge. Use a different name in that case.
@@ -100,6 +119,39 @@ PrintForge. Use a different name in that case.
 - **Print Format form.** Formats made here get an *Edit in PrintForge* button. Editing
   their HTML by hand is overwritten on the next publish.
 
+### Elements and page options
+
+- **QR code and barcode.** Each encodes a field of the document (`doc.name` by default)
+  or fixed text, and prints nothing while that value is empty. Point a QR code at the
+  field that holds your tax authority link (for example an eTIMS URL) to print it on
+  invoices. Barcodes can be Code 128, Code 39, EAN-13, EAN-8 or UPC-A. Both are drawn by
+  the site as vectors when the document is printed, so the canvas shows a stand-in.
+- **Show only if.** Any element can be printed only when a field is set or a condition
+  is true, e.g. `doc.discount_amount` or `doc.status == "Paid"`.
+- **Repeat for each row.** A container can be printed once per row of a child table,
+  optionally starting a new page after each one. Inside it use `{{ item.field }}`. This
+  is how one label per item is made.
+- **Insert a field.** The list under a text element is searchable. A link field opens
+  to the fields of the document it points at (the customer's tax ID from an invoice,
+  say), and *Ready-made* has values such as the amount in words, today's date and who
+  printed it.
+- **Blocks.** The Insert panel has ready blocks: taxes table, payment schedule, bank and
+  M-Pesa details, amount in words, signatures, stamp area, QR code with caption, and a
+  block per item row. The bank and paybill lines are plain text for you to fill in.
+- **Receipts and labels.** Besides A3/A4/A5/Letter/Legal, the Page panel has a custom
+  size in millimetres with presets for 80 mm and 58 mm receipt rolls and common label
+  sizes. A receipt's height is fixed, as the PDF step needs one; set it to suit.
+- **Watermark.** DRAFT / CANCELLED by document status, or your own text (COPY), printed
+  faintly across every page. It is placed once per page height, so on a document whose
+  page breaks are forced it can sit higher or lower from page to page.
+- **Several elements at once.** Shift+click adds to the selection. The group can be
+  copied, cut, pasted (Ctrl+C / X / V, also into another design), duplicated, deleted
+  and nudged. Lining up and even spacing apply to elements placed freely in the same
+  container; elements in a flow layout are arranged by their container.
+
+Plain wording in a design is printed through Frappe's translator, so labels follow the
+language chosen in the print dialog wherever the site has a translation.
+
 ### Report formats
 
 Pick a report in **New** to design a print format for it. The format then appears in
@@ -110,8 +162,9 @@ the server, so a few things differ from document formats:
   the report grid formats them. Total rows are bold.
 - Text can use `{{ title }}`, `{{ filters.from_date }}` and the like. `doc` does not
   exist in a report.
-- Letter head comes from the report's own Print dialog; the repeat, page-number and
-  company-logo options do not apply.
+- Letter head comes from the report's own Print dialog; the repeat, page-number,
+  watermark and company-logo options do not apply, and QR codes and barcodes are left
+  out.
 - There is no live preview. Publish, then print the report.
 - Columns can only be loaded automatically for reports that run without filters. For
   the rest, type the column names into the field list.
@@ -155,15 +208,18 @@ publishing or exporting as JSON is then the way to keep the work.
 | `src/App.jsx` | The editor shell: state, toolbar, canvas, publishing |
 | `src/components/` | Canvas elements, side panels, dialogs, form controls |
 | `src/tree.js` | Design-tree operations, element defaults, starter designs |
+| `src/templates.js` | Ready-made designs and blocks |
 | `src/exporter.js` | Design → Print Format HTML (Jinja, or Frappe's browser templates for reports) |
 | `src/frappe.js` | Calls to the site API |
 | `src/styles.js`, `src/doctypes.js` | Editor stylesheet; preset doctype list |
 | `src/*.test.js(x)` | Tests |
-| `printforge/api.py` | Site API: publish, preview (HTML and PDF), open designs, doctypes, reports and fields |
+| `printforge/api.py` | Site API: publish, preview (HTML and PDF), open designs and earlier versions, doctypes, reports and fields |
+| `printforge/jinja.py` | QR code and barcode functions that published formats call when printing |
+| `printforge/printforge/doctype/printforge_version/` | Earlier designs of each published format |
 | `printforge/utils.py` | Helpers that need no site; tested in `printforge/tests/` |
 | `.github/workflows/ci.yml` | Lint, tests and build on every push |
 | `printforge/public/js/print_format.js` | *Edit in PrintForge* button on the Print Format form |
-| `printforge/install.py` | Creates the `printforge_design` custom field |
+| `printforge/install.py` | Creates the `printforge_design` custom field and the Print Designer role |
 | `printforge/www/printforge.*` | The full-screen builder page at `/printforge` |
 | `printforge/printforge/page/printforge/` | Desk page at `/app/printforge` |
 | `printforge/public/dist/` | Built bundle served by the site |

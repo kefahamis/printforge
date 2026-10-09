@@ -78,6 +78,11 @@ class TestFieldsFromMeta(unittest.TestCase):
 		self.assertEqual(fields[1]["label"], "grand_total")
 		self.assertTrue(fields[2]["isChild"])
 
+	def test_link_fields_name_the_doctype_they_point_at(self):
+		fields = utils.fields_from_meta([{"fieldname": "customer", "fieldtype": "Link", "options": "Customer"}, *self.FIELDS[2:]])
+		self.assertEqual(fields[0]["link"], "Customer")
+		self.assertNotIn("link", fields[1])
+
 	def test_child_tables_carry_their_columns(self):
 		asked = []
 
@@ -104,6 +109,32 @@ class TestFieldsFromReportColumns(unittest.TestCase):
 
 	def test_no_columns(self):
 		self.assertEqual(utils.fields_from_report_columns(None, str), [])
+
+
+class TestCodes(unittest.TestCase):
+	def test_qr_draws_one_square_per_dark_module_inside_a_quiet_border(self):
+		svg = utils.matrix_svg([[1, 0], [0, 1]], 96, quiet=2)
+		self.assertIn('width="96" height="96" viewBox="0 0 6 6"', svg)
+		self.assertEqual(svg.count("h1v1h-1z"), 2)
+		self.assertIn("M2 2h1v1h-1z", svg)
+		self.assertIn("M3 3h1v1h-1z", svg)
+
+	def test_barcode_merges_runs_of_bars_and_stretches_to_the_width(self):
+		svg = utils.bars_svg("1101", 200, 60, quiet=0)
+		self.assertIn('width="200" height="60" viewBox="0 0 4 1" preserveAspectRatio="none"', svg)
+		self.assertIn("M0 0h2v1h-2z", svg)
+		self.assertIn("M3 0h1v1h-1z", svg)
+
+	def test_barcode_keeps_a_blank_margin_on_both_sides(self):
+		svg = utils.bars_svg("11", 200, 60)
+		self.assertIn('viewBox="0 0 22 1"', svg)
+		self.assertIn("M10 0h2v1h-2z", svg)
+		self.assertNotIn("<div", svg)
+
+	def test_barcode_text_sits_under_the_bars_and_is_escaped(self):
+		html = utils.bars_svg("101", 200, 60, "A<1>")
+		self.assertIn('height="47"', html)
+		self.assertIn("A&lt;1&gt;", html)
 
 
 if __name__ == "__main__":

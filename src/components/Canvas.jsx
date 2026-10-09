@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { getPathData } from '../exporter.js';
 import { snap, dc, isDesc, calcGuides, SAMPLE_DATA, subst, COMPANY_LOGO_EXPR } from '../tree.js';
+import { FakeQR, FakeBars } from './atoms.jsx';
 
 // ── Resize handles ────────────────────────────────────────────────────────────
 export function RH({ el, onUpdate, zoom, preview, tree, pageIdx, onGuides }) {
@@ -39,12 +40,13 @@ export function RH({ el, onUpdate, zoom, preview, tree, pageIdx, onGuides }) {
 }
 
 // ── Canvas node ───────────────────────────────────────────────────────────────
-export function CNode({ nodeId, tree, selected, onSelect, onUpdate, onDrop, zoom, depth, flow, preview, onActive, pageIdx, onGuides, penMode, setPenMode, editPointIdx, setEditPointIdx, selPointIdx, setSelPointIdx, editHandle, setEditHandle }) {
+export function CNode({ nodeId, tree, selected, multi = [], onSelect, onUpdate, onDrop, zoom, depth, flow, preview, onActive, pageIdx, onGuides, penMode, setPenMode, editPointIdx, setEditPointIdx, selPointIdx, setSelPointIdx, editHandle, setEditHandle }) {
   const [over, setOver] = useState(false);
   const el = tree.nodes[nodeId];
   if (!el) return null;
 
-  const isSel = selected === nodeId;
+  const isPrimary = selected === nodeId;
+  const isSel = isPrimary || multi.includes(nodeId);
   const isCont = el.type === "container";
   const isEmpty = isCont && (el.children || []).length === 0;
   const isFlow = el.mode === "flow";
@@ -52,9 +54,9 @@ export function CNode({ nodeId, tree, selected, onSelect, onUpdate, onDrop, zoom
 
   const onMD = e => {
     if (preview || e.target.classList.contains("rh")) return;
-    e.stopPropagation(); onSelect(nodeId);
+    e.stopPropagation(); onSelect(nodeId, e);
     if (onActive) onActive();
-    if (flow) return;
+    if (flow || e.shiftKey) return;
     const ox = e.clientX, oy = e.clientY, ex = el.x, ey = el.y;
     const mv = ev => {
       const nx = snap(ex + (ev.clientX - ox) / zoom);
@@ -70,12 +72,12 @@ export function CNode({ nodeId, tree, selected, onSelect, onUpdate, onDrop, zoom
     window.addEventListener("mousemove", mv); window.addEventListener("mouseup", up);
   };
 
-  const label = el.type === "container" ? (el.layout || "container") + " (" + ((el.children || []).length) + ")" : (el.type || "element");
+  const label = (el.type === "container" ? (el.layout || "container") + " (" + ((el.children || []).length) + ")" : (el.type || "element")) + (el.repeatFor ? " · each " + el.repeatFor : "");
 
   // Natural Flow Logic for Canvas View
   const isRoot = tree.pages.some(p => (p.roots || []).includes(nodeId));
   const isFlowWrapper = isRoot || flow;
-  const isShape = ["rect", "circle", "triangle", "line", "image"].includes(el.type);
+  const isShape = ["rect", "circle", "triangle", "line", "image", "qr", "barcode"].includes(el.type);
 
   const baseStyle = isFlowWrapper
     ? { position: "relative", cursor: "move", userSelect: "none", flexShrink: 0, width: isRoot && !isShape ? "100%" : el.w, ...(el.margin != null ? { margin: el.margin } : {}) }
@@ -91,21 +93,21 @@ export function CNode({ nodeId, tree, selected, onSelect, onUpdate, onDrop, zoom
   } else if (el.type === "rect") {
     body = (
       <div style={{ height: "100%", background: el.fill, border: el.strokeWidth > 0 ? el.strokeWidth + "px " + (el.style || "solid") + " " + el.stroke : "none", borderRadius: el.borderRadius, opacity: el.opacity, padding: el.padding, position: "relative", overflow: "hidden", ...layoutStyles }}>
-        {(el.children || []).map(c => <CNode key={c} nodeId={c} tree={tree} selected={selected} onSelect={onSelect} onUpdate={onUpdate} onDrop={onDrop} zoom={zoom} depth={depth + 1} flow={true} preview={preview} onActive={onActive} pageIdx={pageIdx} onGuides={onGuides} penMode={penMode} setPenMode={setPenMode} editPointIdx={editPointIdx} setEditPointIdx={setEditPointIdx} selPointIdx={selPointIdx} setSelPointIdx={setSelPointIdx} editHandle={editHandle} setEditHandle={setEditHandle} />)}
+        {(el.children || []).map(c => <CNode key={c} nodeId={c} tree={tree} selected={selected} multi={multi} onSelect={onSelect} onUpdate={onUpdate} onDrop={onDrop} zoom={zoom} depth={depth + 1} flow={true} preview={preview} onActive={onActive} pageIdx={pageIdx} onGuides={onGuides} penMode={penMode} setPenMode={setPenMode} editPointIdx={editPointIdx} setEditPointIdx={setEditPointIdx} selPointIdx={selPointIdx} setSelPointIdx={setSelPointIdx} editHandle={editHandle} setEditHandle={setEditHandle} />)}
         {!preview && over && <div className="dz over" />}
       </div>
     );
   } else if (el.type === "circle") {
     body = (
       <div style={{ height: "100%", background: el.fill, border: el.strokeWidth > 0 ? el.strokeWidth + "px " + (el.style || "solid") + " " + el.stroke : "none", borderRadius: "50%", opacity: el.opacity, padding: el.padding, position: "relative", overflow: "hidden", ...layoutStyles }}>
-        {(el.children || []).map(c => <CNode key={c} nodeId={c} tree={tree} selected={selected} onSelect={onSelect} onUpdate={onUpdate} onDrop={onDrop} zoom={zoom} depth={depth + 1} flow={true} preview={preview} onActive={onActive} pageIdx={pageIdx} onGuides={onGuides} penMode={penMode} setPenMode={setPenMode} editPointIdx={editPointIdx} setEditPointIdx={setEditPointIdx} selPointIdx={selPointIdx} setSelPointIdx={setSelPointIdx} editHandle={editHandle} setEditHandle={setEditHandle} />)}
+        {(el.children || []).map(c => <CNode key={c} nodeId={c} tree={tree} selected={selected} multi={multi} onSelect={onSelect} onUpdate={onUpdate} onDrop={onDrop} zoom={zoom} depth={depth + 1} flow={true} preview={preview} onActive={onActive} pageIdx={pageIdx} onGuides={onGuides} penMode={penMode} setPenMode={setPenMode} editPointIdx={editPointIdx} setEditPointIdx={setEditPointIdx} selPointIdx={selPointIdx} setSelPointIdx={setSelPointIdx} editHandle={editHandle} setEditHandle={setEditHandle} />)}
         {!preview && over && <div className="dz over" />}
       </div>
     );
   } else if (el.type === "triangle") {
     body = (
       <div style={{ height: "100%", background: el.fill, clipPath: "polygon(50% 0%, 0% 100%, 100% 100%)", opacity: el.opacity, padding: el.padding, position: "relative", overflow: "hidden", ...layoutStyles }}>
-        {(el.children || []).map(c => <CNode key={c} nodeId={c} tree={tree} selected={selected} onSelect={onSelect} onUpdate={onUpdate} onDrop={onDrop} zoom={zoom} depth={depth + 1} flow={true} preview={preview} onActive={onActive} pageIdx={pageIdx} onGuides={onGuides} penMode={penMode} setPenMode={setPenMode} editPointIdx={editPointIdx} setEditPointIdx={setEditPointIdx} selPointIdx={selPointIdx} setSelPointIdx={setSelPointIdx} editHandle={editHandle} setEditHandle={setEditHandle} />)}
+        {(el.children || []).map(c => <CNode key={c} nodeId={c} tree={tree} selected={selected} multi={multi} onSelect={onSelect} onUpdate={onUpdate} onDrop={onDrop} zoom={zoom} depth={depth + 1} flow={true} preview={preview} onActive={onActive} pageIdx={pageIdx} onGuides={onGuides} penMode={penMode} setPenMode={setPenMode} editPointIdx={editPointIdx} setEditPointIdx={setEditPointIdx} selPointIdx={selPointIdx} setSelPointIdx={setSelPointIdx} editHandle={editHandle} setEditHandle={setEditHandle} />)}
         {!preview && over && <div className="dz over" />}
       </div>
     );
@@ -135,6 +137,10 @@ export function CNode({ nodeId, tree, selected, onSelect, onUpdate, onDrop, zoom
         <span style={{ fontSize: 9, color: "#666", fontFamily: "var(--mono)", background: "rgba(255,255,255,.8)", padding: "2px 4px", borderRadius: 3, position: "relative", zIndex: 1 }}>{el.logoType !== "company" ? "Custom image" : el.jinjaExpr === COMPANY_LOGO_EXPR ? "Company logo" : el.jinjaExpr}</span>
       </div>
     );
+  } else if (el.type === "qr") {
+    body = <div style={{ height: el.h, display: "flex" }}><FakeQR size={Math.min(el.w, el.h)} /></div>;
+  } else if (el.type === "barcode") {
+    body = <div style={{ height: el.h, overflow: "hidden" }}><FakeBars w={el.w} h={el.h} text={el.showText === false ? "" : (el.source === "text" ? el.value : preview ? subst("{{ " + el.value + " }}") : el.value)} /></div>;
   } else if (el.type === "table") {
     const cols = el.columns || [];
     const rows = preview ? SAMPLE_DATA.items : [{}, {}, {}];
@@ -163,7 +169,7 @@ export function CNode({ nodeId, tree, selected, onSelect, onUpdate, onDrop, zoom
     body = (
       <div style={{ height: flow ? "auto" : el.h, minHeight: el.h, background: el.fill, border: el.strokeWidth > 0 ? el.strokeWidth + "px solid " + el.stroke : preview ? "none" : "1px dashed #d0d0d0", borderRadius: el.borderRadius, opacity: el.opacity, padding: el.padding, position: "relative", overflow: "hidden", ...(isFlow ? layoutStyles : {}) }}>
         {!preview && <div style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: 2, background: color, opacity: .4, pointerEvents: "none" }} />}
-        {depth < 30 ? (el.children || []).map(c => <CNode key={c} nodeId={c} tree={tree} selected={selected} onSelect={onSelect} onUpdate={onUpdate} onDrop={onDrop} zoom={zoom} depth={depth + 1} flow={isFlow} preview={preview} onActive={onActive} pageIdx={pageIdx} onGuides={onGuides} penMode={penMode} setPenMode={setPenMode} editPointIdx={editPointIdx} setEditPointIdx={setEditPointIdx} selPointIdx={selPointIdx} setSelPointIdx={setSelPointIdx} editHandle={editHandle} setEditHandle={setEditHandle} />) : <div style={{ fontSize: 8, color: "red" }}>Max depth</div>}
+        {depth < 30 ? (el.children || []).map(c => <CNode key={c} nodeId={c} tree={tree} selected={selected} multi={multi} onSelect={onSelect} onUpdate={onUpdate} onDrop={onDrop} zoom={zoom} depth={depth + 1} flow={isFlow} preview={preview} onActive={onActive} pageIdx={pageIdx} onGuides={onGuides} penMode={penMode} setPenMode={setPenMode} editPointIdx={editPointIdx} setEditPointIdx={setEditPointIdx} selPointIdx={selPointIdx} setSelPointIdx={setSelPointIdx} editHandle={editHandle} setEditHandle={setEditHandle} />) : <div style={{ fontSize: 8, color: "red" }}>Max depth</div>}
         {!preview && <div className={"dz" + (over ? " over" : isEmpty ? " hint" : "")} />}
         {isEmpty && !over && !preview && <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", flexDirection: "column", gap: 4, pointerEvents: "none" }}>
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#b0b0b0" strokeWidth="1.5"><path d="M12 5v14M5 12h14" /></svg>
@@ -198,7 +204,7 @@ export function CNode({ nodeId, tree, selected, onSelect, onUpdate, onDrop, zoom
         </svg>
       )}
       {isSel && !preview && !penMode && <div className="sel-ring" style={{ borderColor: color }} />}
-      {isSel && !preview && <RH el={el} onUpdate={onUpdate} zoom={zoom} preview={preview} tree={tree} pageIdx={pageIdx} onGuides={onGuides} />}
+      {isPrimary && !multi.length && !preview && <RH el={el} onUpdate={onUpdate} zoom={zoom} preview={preview} tree={tree} pageIdx={pageIdx} onGuides={onGuides} />}
     </div>
   );
 }
