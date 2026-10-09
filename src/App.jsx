@@ -1,26 +1,14 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import * as htmlToImage from 'html-to-image';
+import { PAGE_SIZES, DOC_FONT, getSettings, pageDims, getPathData, marginMm, toPrintFormatHtml, toStandaloneHtml } from './exporter.js';
 
-const A4W = 794, A4H = 1123, SNAP = 4;
+const SNAP = 4;
 const snap = v => Math.round(v / SNAP) * SNAP;
 const uid = () => "_" + Math.random().toString(36).slice(2, 9);
-const getPathData = (pts, closed = false) => {
-  if (!pts || pts.length < 2) return "";
-  let d = `M ${pts[0].x} ${pts[0].y}`;
-  for (let i = 1; i < pts.length; i++) {
-    const p = pts[i], prev = pts[i - 1];
-    d += ` C ${prev.c2.x} ${prev.c2.y}, ${p.c1.x} ${p.c1.y}, ${p.x} ${p.y}`;
-  }
-  if (closed) {
-    const p = pts[0], prev = pts[pts.length - 1];
-    d += ` C ${prev.c2.x} ${prev.c2.y}, ${p.c1.x} ${p.c1.y}, ${p.x} ${p.y} Z`;
-  }
-  return d;
-};
 const DCS = ["#1f6feb", "#0e8a7d", "#a86b00", "#c2410c", "#6b5bd2"];
 const dc = d => DCS[d % DCS.length];
 
-function injectStyles(theme = "dark") {
+function injectStyles(theme = "dark", page = { w: 794, h: 1123 }) {
   const isDark = theme === "dark";
   const s0 = isDark ? {
     b0: "#111111", b1: "#191919", b2: "#1f1f1f", b3: "#272727", b4: "#313131",
@@ -35,10 +23,6 @@ function injectStyles(theme = "dark") {
   const id = "pf6";
   let s = document.getElementById(id);
   if (!s) {
-    const link = document.createElement("link");
-    link.rel = "stylesheet";
-    link.href = "https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600;700;800&display=swap";
-    document.head.appendChild(link);
     s = document.createElement("style");
     s.id = id;
     document.head.appendChild(s);
@@ -49,7 +33,8 @@ function injectStyles(theme = "dark") {
     `:root{--b0:${s0.b0};--b1:${s0.b1};--b2:${s0.b2};--b3:${s0.b3};--b4:${s0.b4};--bd:${s0.bd};--bm:${s0.bm};--bh:${s0.bh};--t0:${s0.t0};--t1:${s0.t1};--t2:${s0.t2};--ac:${s0.ac};--ad:${s0.ad};--gn:#2f9e5b;--rd:#d9484d;--r4:4px;--r6:6px;--sans:system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;--mono:ui-monospace,'Cascadia Mono',Consolas,Menlo,monospace}`,
     "body{background:var(--b0);font-family:var(--sans);color:var(--t0);overflow:hidden}",
     "button{font-family:inherit}",
-    ".pf-print-area{font-family:'Geist',sans-serif}",
+    // The page uses the site's print font so line breaks match the printed document
+    `.pf-print-area{font-family:${FRAPPE?.print_font || DOC_FONT}}`,
     "input,select,textarea{font-family:inherit}",
     "::-webkit-scrollbar{width:6px;height:6px}",
     "::-webkit-scrollbar-track{background:transparent}",
@@ -108,15 +93,15 @@ function injectStyles(theme = "dark") {
     ".pf-guide-h{position:absolute;left:0;right:0;height:1px;background:#ff00ff;z-index:1000;pointer-events:none;}",
     ".pf-guide-v{position:absolute;top:0;bottom:0;width:1px;background:#ff00ff;z-index:1000;pointer-events:none;}",
     `@media print {
-      @page { size: A4; margin: 0; }
+      @page { size: ${page.w}px ${page.h}px; margin: 0; }
       body * { visibility: hidden; }
       .pf-print-area, .pf-print-area * { visibility: visible; }
-      .pf-print-area { 
-        position: fixed !important; 
-        left: 0 !important; 
-        top: 0 !important; 
-        width: ${A4W}px !important;
-        height: ${A4H}px !important;
+      .pf-print-area {
+        position: fixed !important;
+        left: 0 !important;
+        top: 0 !important;
+        width: ${page.w}px !important;
+        height: ${page.h}px !important;
         padding: 0 !important;
         margin: 0 !important;
         box-shadow: none !important;
@@ -174,7 +159,7 @@ const migrateTree = (t) => {
     pages = [{ id: uid(), name: "Page 1", roots: t.roots }];
   }
   pages = pages.map(p => ({ ...p, padding: p.padding ?? 40 }));
-  return { nodes, pages };
+  return { nodes, pages, settings: getSettings(t) };
 };
 
 const rmFromParent = (tree, id) => {
@@ -261,8 +246,9 @@ const calcGuides = (tree, targetId, box, activePageIdx) => {
     }
   };
   collect(page.roots);
-  others.push({ id: 'page', x: 0, y: 0, w: A4W, h: A4H });
-  others.push({ id: 'page-center', x: A4W / 2, y: A4H / 2, w: 0, h: 0 });
+  const pg = pageDims(tree);
+  others.push({ id: 'page', x: 0, y: 0, w: pg.w, h: pg.h });
+  others.push({ id: 'page-center', x: pg.w / 2, y: pg.h / 2, w: 0, h: 0 });
 
   for (const o of others) {
     const ox = o.x, oy = o.y, ow = o.w, oh = o.h;
@@ -295,12 +281,14 @@ const calcGuides = (tree, targetId, box, activePageIdx) => {
 
 // ── Preview Data ──────────────────────────────────────────────────────────────
 const SAMPLE_DATA = {
-  name: "ACC-SINV-2026-00001", customer_name: "Tagrit", posting_date: "2026-02-22", due_date: "2026-03-24",
-  grand_total: 12500.00, net_total: 10775.86, tax_amount: 1724.14, currency: "KES",
-  company: "EXAMPLE COMPANY LTD", company_address: "123 Example Road, Nairobi",
+  // Values are written the way Frappe's formatter prints them
+  name: "ACC-SINV-2026-00001", customer_name: "Tagrit", posting_date: "22-02-2026", due_date: "24-03-2026",
+  grand_total: "KES 12,500.00", net_total: "KES 10,775.86", tax_amount: "KES 1,724.14", currency: "KES",
+  company: "EXAMPLE COMPANY LTD", company_address_display: "123 Example Road<br>Nairobi",
+  address_display: "P.O. Box 00000-00100<br>Nairobi",
   items: [
-    { idx: 1, item_name: "Hydro Filter (Small)", qty: 2, rate: 4500, amount: 9000 },
-    { idx: 2, item_name: "Connector Valve v2", qty: 5, rate: 700, amount: 3500 }
+    { idx: 1, item_name: "Hydro Filter (Small)", qty: 2, rate: "KES 4,500.00", amount: "KES 9,000.00" },
+    { idx: 2, item_name: "Connector Valve v2", qty: 5, rate: "KES 700.00", amount: "KES 3,500.00" }
   ]
 };
 
@@ -311,9 +299,11 @@ const subst = (txt, data = SAMPLE_DATA) => {
 };
 
 // ── Factories ─────────────────────────────────────────────────────────────────
+// The logo lives on the Company record, not on the document being printed
+const COMPANY_LOGO_EXPR = '{{ frappe.db.get_value("Company", doc.company, "company_logo") }}';
 const mkT = (x = 80, y = 80) => ({ id: uid(), type: "text", children: [], x, y, w: 240, h: 32, content: "{{ doc.field_name }}", fontSize: 13, fontWeight: "400", color: "#111111", align: "left", italic: false, lineHeight: 1.5, bg: "transparent", padding: 4, borderRadius: 0, isRich: false });
 const mkC = (x = 40, y = 80) => ({ id: uid(), type: "container", children: [], x, y, w: 714, h: 120, fill: "transparent", stroke: "#d4d4d4", strokeWidth: 1, borderRadius: 0, opacity: 1, padding: 12, mode: "flow", layout: "flex", flexDir: "row", flexWrap: "wrap", justifyContent: "flex-start", alignItems: "stretch", gap: 12, gridCols: "1fr 1fr", gridRows: "auto", colGap: 12, rowGap: 12 });
-const mkI = (x = 80, y = 80) => ({ id: uid(), type: "image", children: [], x, y, w: 160, h: 80, logoType: "company", jinjaExpr: "{{ doc.company_logo }}", customUrl: "", label: "Logo", objectFit: "contain", fallbackBg: "#f2f2f2" });
+const mkI = (x = 80, y = 80) => ({ id: uid(), type: "image", children: [], x, y, w: 160, h: 80, logoType: "company", jinjaExpr: COMPANY_LOGO_EXPR, customUrl: "", label: "Logo", objectFit: "contain", fallbackBg: "#f2f2f2" });
 const mkR = (x = 80, y = 80) => ({ id: uid(), type: "rect", children: [], x, y, w: 200, h: 80, fill: "#d9d9d9", stroke: "transparent", strokeWidth: 0, borderRadius: 0, opacity: 1, mode: "absolute", layout: "flex", flexDir: "column", justifyContent: "center", alignItems: "center", gap: 10, padding: 10 });
 const mkL = (x = 40, y = 80) => ({ id: uid(), type: "line", children: [], x, y, w: 714, h: 1, color: "#cccccc", thickness: 1, style: "solid" });
 const mkCircle = (x = 80, y = 80) => ({ id: uid(), type: "circle", children: [], x, y, w: 100, h: 100, fill: "#d9d9d9", stroke: "transparent", strokeWidth: 0, opacity: 1, mode: "absolute", layout: "flex", flexDir: "column", justifyContent: "center", alignItems: "center", gap: 10, padding: 10 });
@@ -321,178 +311,6 @@ const mkTriangle = (x = 80, y = 80) => ({ id: uid(), type: "triangle", children:
 const mkPath = (x = 80, y = 80, points = []) => ({ id: uid(), type: "path", children: [], x, y, w: 100, h: 100, points, fill: "transparent", stroke: "#111111", strokeWidth: 2, opacity: 1 });
 const mkTbl = (x = 40, y = 80) => ({ id: uid(), type: "table", children: [], x, y, w: 714, h: 200, childField: "items", columns: [{ id: uid(), label: "Description", field: "item_name", align: "left", width: "40%" }, { id: uid(), label: "Qty", field: "qty", align: "center", width: "12%" }, { id: uid(), label: "Rate", field: "rate", align: "right", width: "22%" }, { id: uid(), label: "Amount", field: "amount", align: "right", width: "26%" }], headerBg: "#f2f2f2", headerColor: "#111111", headerFontSize: 11, rowBg: "#ffffff", rowAltBg: "#ffffff", rowColor: "#222222", borderColor: "#cccccc", fontSize: 12, footerRows: [] });
 const FACS = { text: mkT, container: mkC, image: mkI, rect: mkR, line: mkL, circle: mkCircle, triangle: mkTriangle, table: mkTbl, path: mkPath };
-
-// ── Jinja ─────────────────────────────────────────────────────────────────────
-const cssLen = v => typeof v === "number" ? v + "px" : (v || "0");
-
-function renderNode(tree, id, indent, extraStyle = "", inFlow = false) {
-  const el = tree.nodes[id]; if (!el) return "";
-  const p = "  ".repeat(indent);
-  const isRoot = tree.pages.some(p => (p.roots || []).includes(id));
-  const isFlow = isRoot || inFlow || el.mode === "flow" || el._flow;
-
-  const isShape = ["rect", "circle", "triangle", "line", "image", "path"].includes(el.type);
-  const pos = isFlow
-    ? ("position:relative;" + (isRoot && !isShape ? "width:100%;" : "width:" + cssLen(el.w) + ";"))
-    : "position:absolute;left:" + (el.x || 0) + "px;top:" + (el.y || 0) + "px;width:" + cssLen(el.w) + ";";
-
-  const base = pos + (extraStyle || "");
-
-  // Layout conversion for wkhtmltopdf (Tables are most robust)
-  let kids = el.children || [];
-  let childrenHtml = "";
-  let layoutStyle = "";
-
-  if (el.layout === "flex" && (el.flexDir === "row" || el.flexDir === "row-reverse")) {
-    const actualKids = el.flexDir === "row-reverse" ? [...kids].reverse() : kids;
-    const cells = actualKids.map(childId => {
-      const child = tree.nodes[childId];
-      const wStr = child && child.w ? `width:${cssLen(child.w)};` : "";
-      const va = el.alignItems === 'center' ? 'middle' : el.alignItems === 'flex-end' ? 'bottom' : 'top';
-      return `<td class="pf-c" style="${wStr}vertical-align:${va} !important;">${renderNode(tree, childId, indent + 2, "", true)}</td>`;
-    }).join("\n");
-    childrenHtml = `\n${p}<table style="width:100%;border-collapse:separate;border-spacing:${el.gap || 0}px 0;"><tr>${cells}</tr></table>\n`;
-  } else if (el.layout === "grid") {
-    const gridSpec = String(el.gridCols || "1fr 1fr").trim();
-    const colsCount = /^\d+$/.test(gridSpec) ? parseInt(gridSpec) : gridSpec.split(/\s+/).length || 2;
-    let rows = [];
-    for (let i = 0; i < kids.length; i += colsCount) {
-      const rowKids = kids.slice(i, i + colsCount);
-      const cells = rowKids.map(childId => `<td class="pf-c" style="width:${Math.round(100 / colsCount)}%;vertical-align:top;">${renderNode(tree, childId, indent + 2, "", true)}</td>`).join("");
-      rows.push(`${p}  <tr>${cells}</tr>`);
-    }
-    childrenHtml = `\n${p}<table style="width:100%;border-collapse:separate;border-spacing:${el.colGap || 0}px ${el.rowGap || 0}px;">\n${rows.join("\n")}\n${p}</table>\n`;
-  } else {
-    childrenHtml = kids.map((childId, i) => {
-      let extra = "";
-      if (el.layout === "flex" && (el.flexDir === "column" || el.flexDir === "column-reverse") && el.gap > 0 && i < kids.length - 1) {
-        extra = `margin-bottom:${el.gap}px;`;
-      }
-      return renderNode(tree, childId, indent + 1, extra, el.mode === "flow" || inFlow);
-    }).join("\n");
-  }
-
-  if (el.type === "text") return p + '<div style="' + base + 'min-height:' + el.h + 'px;' + (el.isRich ? '' : 'font-size:' + el.fontSize + 'px;font-weight:' + el.fontWeight + ';color:' + el.color + ';text-align:' + el.align + ';font-style:' + (el.italic ? "italic" : "normal") + ';line-height:' + el.lineHeight + ';') + 'background:' + el.bg + ';padding:' + cssLen(el.padding) + ';border-radius:' + el.borderRadius + 'px;">' + (el.content || "") + '</div>';
-
-  if (el.type === "rect") {
-    const border = (el.strokeWidth || 0) + 'px solid ' + (el.stroke || "transparent");
-    return p + `<div style="${base}height:${el.h}px;background:${el.fill};border:${border};border-radius:${el.borderRadius || 0}px;opacity:${el.opacity || 1};padding:${el.padding || 0}px;overflow:hidden;">${childrenHtml}${p}</div>`;
-  }
-
-  if (el.type === "circle") {
-    const svgCircle = `<svg width="${el.w}" height="${el.h}" style="position:absolute;top:0;left:0;z-index:-1;"><ellipse cx="${el.w / 2}" cy="${el.h / 2}" rx="${el.w / 2}" ry="${el.h / 2}" fill="${el.fill}" stroke="${el.stroke}" stroke-width="${el.strokeWidth || 0}" /></svg>`;
-    return p + `<div style="${base}height:${el.h}px;opacity:${el.opacity || 1};padding:${el.padding || 0}px;overflow:hidden;">\n${p}  ${svgCircle}\n${childrenHtml}${p}</div>`;
-  }
-
-  if (el.type === "triangle") {
-    const svgTri = `<svg width="${el.w}" height="${el.h}" style="position:absolute;top:0;left:0;z-index:-1;"><polygon points="${el.w / 2},0 0,${el.h} ${el.w},${el.h}" fill="${el.fill}" stroke="${el.stroke}" stroke-width="${el.strokeWidth || 0}" /></svg>`;
-    return p + `<div style="${base}height:${el.h}px;opacity:${el.opacity || 1};padding:${el.padding || 0}px;overflow:hidden;">\n${p}  ${svgTri}\n${childrenHtml}${p}</div>`;
-  }
-
-  if (el.type === "path") {
-    const d = getPathData(el.points, el.closed);
-    return p + `<div style="${base}overflow:visible;"><svg width="${el.w}" height="${el.h}" viewBox="0 0 ${el.w} ${el.h}" style="width:100%;height:100%;overflow:visible;"><path d="${d}" fill="${el.fill || 'transparent'}" stroke="${el.stroke || '#000'}" stroke-width="${el.strokeWidth || 1}" opacity="${el.opacity || 1}" /></svg></div>`;
-  }
-
-  if (el.type === "line") return p + '<div style="' + base + 'height:' + el.thickness + 'px;border-top:' + el.thickness + 'px ' + el.style + ' ' + el.color + ';"></div>';
-
-  if (el.type === "image") {
-    const fit = el.objectFit || "contain";
-    if (el.logoType === "custom" && el.customUrl) {
-      return p + '<img src="' + el.customUrl + '" style="' + base + 'height:' + el.h + 'px;object-fit:' + fit + ';" />';
-    }
-    const expr = (el.jinjaExpr || "").replace(/[{}]/g, "").trim();
-    return p + '{%if ' + (expr || "True") + '%}\n' + p + '<img src="' + (el.jinjaExpr || "") + '" style="' + base + 'height:' + el.h + 'px;object-fit:' + fit + ';" />\n' + p + '{%endif%}';
-  }
-
-  if (el.type === "table") {
-    const cols = el.columns || [];
-    const ths = cols.map(c => '<th style="width:' + (c?.width || "auto") + ';text-align:' + (c?.align || "left") + ';padding:7px 10px !important;font-size:' + (el.headerFontSize || 11) + 'px;font-weight:600;color:' + (el.headerColor || "inherit") + ';">' + (c?.label || "") + '</th>').join("");
-    const tdSt = 'padding:6px 10px !important;font-size:' + (el.fontSize || 12) + 'px;color:' + (el.rowColor || "inherit") + ';border-bottom:1px solid ' + (el.borderColor || "transparent") + ';';
-    const tds = cols.map(c => '<td style="text-align:' + (c?.align || "left") + ';' + tdSt + '">{{item.' + (c?.field || "field") + '|default("")}}</td>').join("");
-    const rowBg = el.rowBg || "transparent", rowAltBg = el.rowAltBg || rowBg;
-    const rowBgSt = rowAltBg === rowBg ? rowBg : "{{ '" + rowBg + "' if loop.index0 % 2 == 0 else '" + rowAltBg + "' }}";
-    let tblSt = base.replace(/position:\s*relative;?/g, "").replace(/width:\s*[^;]+;?/g, "") + "width:100%;border-collapse:collapse;table-layout:fixed;";
-    return p + '<table style="' + tblSt + '">\n' + p + '<thead><tr style="background:' + (el.headerBg || "transparent") + ';color:' + (el.headerColor || "inherit") + ';">' + ths + '</tr></thead>\n' + p + '<tbody>\n' + p + '{%for item in doc.' + (el.childField || "items") + '%}\n' + p + '<tr style="page-break-inside:avoid;background:' + rowBgSt + ';">' + tds + '</tr>\n' + p + '{%endfor%}\n' + p + '</tbody>\n' + p + '</table>';
-  }
-
-  if (el.type === "container") {
-    if (indent > 25) return p + "<!-- max depth reached -->";
-    const bg = el.fill || "transparent";
-    const border = (el.strokeWidth || 0) + 'px ' + (el.style || "solid") + ' ' + (el.stroke || "transparent");
-    return p + `<div style="${base}min-height:${el.h}px;background:${bg};border:${border};border-radius:${el.borderRadius || 0}px;opacity:${el.opacity || 1};padding:${cssLen(el.padding)};overflow:hidden;">${childrenHtml}${p}</div>`;
-  }
-  return "";
-}
-
-// Frappe renders a Print Format's HTML inside its own page (.print-format) with `doc`
-// already in scope, so the published version is a fragment with scoped CSS. The page
-// padding becomes the Print Format's PDF margins instead of padding on the page box.
-function toPrintFormatHtml(tree) {
-  const pad = tree.pages[0]?.padding ?? 40;
-  const css = `
-  @media screen { .print-format { padding: ${pad}px !important; } }
-  @media print { .print-format { padding: 0 !important; } }
-  .print-format { max-width: ${A4W}px !important; }
-  .pf-doc, .pf-doc * { box-sizing: border-box; }
-  .pf-doc { color: #111111; -webkit-print-color-adjust: exact; }
-  .pf-doc div, .pf-doc p { margin: 0; }
-  .pf-doc table { width: 100%; border-collapse: collapse; table-layout: fixed; margin: 0; }
-  .print-format .pf-doc td.pf-c { padding: 0 !important; border: 0 !important; }
-  .pf-doc img { max-width: 100%; display: block; }
-  .pf-page { position: relative; width: ${A4W - pad * 2}px; max-width: 100%; }
-`;
-  const last = tree.pages.length - 1;
-  const pagesHtml = tree.pages.map((page, i) => {
-    const rootsHtml = (page.roots || []).map(id => renderNode(tree, id, 1, "", true)).join("\n");
-    return `<div class="pf-page"${i < last ? ' style="page-break-after:always;"' : ""}>\n${rootsHtml}\n</div>`;
-  }).join("\n");
-  return `<style>${css}</style>\n<div class="pf-doc">\n${pagesHtml}\n</div>`;
-}
-
-function toJinja(tree, doctype) {
-  try {
-    const css = `
-    * { box-sizing: border-box; margin: 0; padding: 0; }
-    body { font-family: 'Geist', sans-serif; background: #fff; color: #111111; margin: 0; padding: 0; -webkit-print-color-adjust: exact; }
-    .page { 
-      position: relative; 
-      width: ${A4W}px; 
-      min-height: ${A4H}px; 
-      page-break-after: always; 
-      overflow: hidden;
-      background: #fff;
-    }
-    table { width: 100%; border-collapse: collapse; table-layout: fixed; }
-    img { max-width: 100%; height: auto; display: block; }
-    @media print {
-      body { background: none; }
-      .page { box-shadow: none; }
-    }
-  `;
-
-    const pagesHtml = tree.pages.map((page, i) => {
-      const rootsHtml = (page.roots || []).map(id => renderNode(tree, id, 1, "", true)).join("\n");
-      return `<div class="page" style="padding: ${page.padding ?? 40}px;">\n${rootsHtml}\n</div>`;
-    }).join("\n");
-
-    return `{%- set doc = frappe.get_doc(doc.doctype, doc.name) -%}
-<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="utf-8">
-  <title>${doctype}</title>
-  <style>${css}</style>
-</head>
-<body>
-${pagesHtml}
-</body>
-</html>`;
-  } catch (e) {
-    console.error("Jinja generation error:", e);
-    return "Error generating Jinja template. Please check console.";
-  }
-}
 
 // ── Frappe site ───────────────────────────────────────────────────────────────
 // Set by the /printforge page of the Frappe app; absent when run standalone with Vite.
@@ -705,7 +523,7 @@ function CNode({ nodeId, tree, selected, onSelect, onUpdate, onDrop, zoom, depth
   const isShape = ["rect", "circle", "triangle", "line", "image"].includes(el.type);
 
   const baseStyle = isFlowWrapper
-    ? { position: "relative", cursor: "move", userSelect: "none", flexShrink: 0, width: isRoot && !isShape ? "100%" : el.w, marginBottom: isRoot ? 4 : 0 }
+    ? { position: "relative", cursor: "move", userSelect: "none", flexShrink: 0, width: isRoot && !isShape ? "100%" : el.w, ...(el.margin != null ? { margin: el.margin } : {}) }
     : { position: "absolute", left: el.x, top: el.y, width: el.w, cursor: "move", userSelect: "none" };
 
   let body = null;
@@ -759,7 +577,7 @@ function CNode({ nodeId, tree, selected, onSelect, onUpdate, onDrop, zoom, depth
         {showCustom ? <img src={el.customUrl} style={{ width: "100%", height: "100%", objectFit: el.objectFit, opacity: .6 }} /> : (
           <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#8a8a8a" strokeWidth="1.5"><rect x="3" y="3" width="18" height="18" rx="2" /><circle cx="8.5" cy="8.5" r="1.5" /><path d="m21 15-5-5L5 21" /></svg>
         )}
-        <span style={{ fontSize: 9, color: "#666", fontFamily: "var(--mono)", background: "rgba(255,255,255,.8)", padding: "2px 4px", borderRadius: 3, position: "relative", zIndex: 1 }}>{el.logoType === "company" ? el.jinjaExpr : "Custom Logo"}</span>
+        <span style={{ fontSize: 9, color: "#666", fontFamily: "var(--mono)", background: "rgba(255,255,255,.8)", padding: "2px 4px", borderRadius: 3, position: "relative", zIndex: 1 }}>{el.logoType !== "company" ? "Custom image" : el.jinjaExpr === COMPANY_LOGO_EXPR ? "Company logo" : el.jinjaExpr}</span>
       </div>
     );
   } else if (el.type === "table") {
@@ -777,7 +595,12 @@ function CNode({ nodeId, tree, selected, onSelect, onUpdate, onDrop, zoom, depth
                 {preview ? subst("{{item." + c.field + "}}", row) : <span style={{ opacity: .3, fontSize: 9, fontFamily: "var(--mono)" }}>item.{c.field}</span>}
               </td>
             ) : null)}
-          </tr>)}</tbody>
+          </tr>)}
+            {(el.footerRows || []).map((fr, i) => <tr key={"f" + i}>
+              {cols.length > 1 && <td colSpan={cols.length - 1} style={{ textAlign: "right", padding: "6px 10px", fontSize: el.fontSize, color: el.rowColor, fontWeight: 600 }}>{fr.label}</td>}
+              <td style={{ textAlign: "right", padding: "6px 10px", fontSize: el.fontSize, color: el.rowColor, fontWeight: 600 }}>{preview ? subst("{{ " + fr.expr + " }}") : <span style={{ opacity: .5, fontSize: 9, fontFamily: "var(--mono)" }}>{fr.expr}</span>}</td>
+            </tr>)}
+          </tbody>
         </table>
       </div>
     );
@@ -926,9 +749,10 @@ function Breadcrumb({ tree, selected, onSelect }) {
 }
 
 // ── Props panel ───────────────────────────────────────────────────────────────
-function Props({ tree, selected, docFields, onUpdate, onDelete, onDup, onZOrder, onAddChild, showRulers, setShowRulers, showGrid, setShowGrid, gridSize, setGridSize, activePageIdx, onUpdatePage, penMode, setPenMode, selPointIdx, setSelPointIdx }) {
+function Props({ tree, selected, docFields, onUpdate, onDelete, onDup, onZOrder, onAddChild, onUpdateSettings, showRulers, setShowRulers, showGrid, setShowGrid, gridSize, setGridSize, activePageIdx, onUpdatePage, penMode, setPenMode, selPointIdx, setSelPointIdx }) {
   const el = selected ? tree.nodes[selected] : null;
   const page = tree.pages[activePageIdx];
+  const settings = getSettings(tree);
   const isRoot = selected ? (page.roots || []).includes(selected) : false;
   const u = (k, v) => onUpdate(selected, { [k]: v });
   const up = (k, v) => onUpdatePage(activePageIdx, { [k]: v });
@@ -950,8 +774,17 @@ function Props({ tree, selected, docFields, onUpdate, onDelete, onDup, onZOrder,
           </button>
         </div>
         <div className="prow" style={{ marginBottom: 12 }}>
-          <Num label="Page Padding" value={page?.padding ?? 40} onChange={v => up("padding", v)} unit="px" />
+          <Sel label="Paper" value={settings.pageSize} onChange={v => onUpdateSettings({ pageSize: v })} options={Object.keys(PAGE_SIZES)} />
+          <Sel label="Orientation" value={settings.orientation} onChange={v => onUpdateSettings({ orientation: v })} options={["Portrait", "Landscape"]} />
         </div>
+        <div className="prow">
+          <Num label="Margins" value={page?.padding ?? 40} onChange={v => up("padding", v)} unit="px" min={0} />
+        </div>
+        <p style={{ fontSize: 10, color: "var(--t2)", marginBottom: 12 }}>{marginMm(tree)} mm on every side of the printed page.</p>
+        <label style={{ display: "flex", alignItems: "flex-start", gap: 6, fontSize: 11, color: "var(--t1)", marginBottom: 4, cursor: "pointer" }}>
+          <input type="checkbox" checked={!!settings.letterHead} onChange={e => onUpdateSettings({ letterHead: e.target.checked })} style={{ accentColor: "var(--ac)", marginTop: 2 }} />Use the site's letter head and footer
+        </label>
+        <p style={{ fontSize: 10, color: "var(--t2)", marginBottom: 12 }}>{settings.letterHead ? "Added above and below this design when printing. Top and bottom margins then come from the site." : "Off: the design is printed exactly as drawn, and the Letter Head option in the print dialog has no effect."}</p>
         {showGrid && (
           <div className="prow">
             <Num label="Grid Size" value={gridSize} onChange={setGridSize} unit="px" />
@@ -1281,7 +1114,7 @@ const COMPONENT_TEMPLATES = [
     create: (idx) => {
       const h = { ...mkC(0, 0), h: 100, flexDir: "row", justifyContent: "space-between", alignItems: "center", padding: "0 0 16px 0", mode: "flow", fill: "transparent", stroke: "transparent", strokeWidth: 0 };
       const logo = { ...mkI(0, 0), w: 100, h: 60, _flow: true };
-      const info = { ...mkT(0, 0), content: "<strong>{{ doc.company }}</strong><br>{{ doc.company_address }}", fontSize: 11, _flow: true, align: "right" };
+      const info = { ...mkT(0, 0), content: "<strong>{{ doc.company }}</strong><br>{{ doc.company_address_display }}", fontSize: 11, _flow: true, align: "right" };
       h.children = [logo.id, info.id];
       return [h, logo, info];
     }
@@ -1297,7 +1130,7 @@ const COMPONENT_TEMPLATES = [
       r1.children = [l1.id, v1.id];
       const r2 = { ...mkC(0, 0), flexDir: "row", justifyContent: "space-between", stroke: "transparent", strokeWidth: 0, padding: 0, _flow: true };
       const l2 = { ...mkT(0, 0), content: "Grand Total", fontSize: 12, fontWeight: "700", _flow: true };
-      const v2 = { ...mkT(0, 0), content: "KES {{ doc.grand_total }}", fontSize: 12, fontWeight: "700", _flow: true, align: "right" };
+      const v2 = { ...mkT(0, 0), content: "{{ doc.grand_total }}", fontSize: 12, fontWeight: "700", _flow: true, align: "right" };
       r2.children = [l2.id, v2.id];
       c.children = [r1.id, r2.id];
       return [c, r1, l1, v1, r2, l2, v2];
@@ -1433,7 +1266,7 @@ function LeftPanel({ onAdd, onAddTemplate, doctype, setDoctype, docFields, setDo
           </Sec>
           <div className="sdiv" />
           <Sec title="Presets">
-            {[{ label: "Sales Invoice", fields: [{ name: "name", label: "Invoice #" }, { name: "customer_name", label: "Customer" }, { name: "posting_date", label: "Date" }, { name: "due_date", label: "Due" }, { name: "currency", label: "Currency" }, { name: "net_total", label: "Net" }, { name: "tax_amount", label: "Tax" }, { name: "grand_total", label: "Total" }, { name: "company", label: "Company" }, { name: "company_address", label: "Address" }, { name: "items", isChild: true }, { name: "taxes", isChild: true }] }, { label: "Purchase Order", fields: [{ name: "name", label: "PO #" }, { name: "supplier_name", label: "Supplier" }, { name: "transaction_date", label: "Date" }, { name: "grand_total", label: "Total" }, { name: "company", label: "Company" }, { name: "items", isChild: true }] }].map(p => (
+            {[{ label: "Sales Invoice", fields: [{ name: "name", label: "Invoice #" }, { name: "customer_name", label: "Customer" }, { name: "posting_date", label: "Date" }, { name: "due_date", label: "Due" }, { name: "currency", label: "Currency" }, { name: "net_total", label: "Net" }, { name: "tax_amount", label: "Tax" }, { name: "grand_total", label: "Total" }, { name: "company", label: "Company" }, { name: "company_address_display", label: "Company Address" }, { name: "items", isChild: true }, { name: "taxes", isChild: true }] }, { label: "Purchase Order", fields: [{ name: "name", label: "PO #" }, { name: "supplier_name", label: "Supplier" }, { name: "transaction_date", label: "Date" }, { name: "grand_total", label: "Total" }, { name: "company", label: "Company" }, { name: "items", isChild: true }] }].map(p => (
               <button key={p.label} onClick={() => { setDoctype(p.label); setDocFields(p.fields); }} style={{ display: "block", width: "100%", padding: "7px 10px", marginBottom: 4, border: "1px solid var(--bd)", borderRadius: "var(--r4)", background: "var(--b3)", color: "var(--t1)", cursor: "pointer", fontSize: 11, textAlign: "left", transition: "all .12s" }} onMouseEnter={e => { e.currentTarget.style.borderColor = "var(--ac)"; e.currentTarget.style.color = "var(--ac)"; }} onMouseLeave={e => { e.currentTarget.style.borderColor = "var(--bd)"; e.currentTarget.style.color = "var(--t1)"; }}>
                 {p.label}
               </button>
@@ -1457,7 +1290,7 @@ function buildTree() {
 
   const hdr = { ...mkC(0, 0), ...row, w: "100%", h: 76, padding: "0 0 20px 0" };
   const logo = { ...mkI(0, 0), w: 130, h: 56, _flow: true };
-  const co = txt("{{ doc.company }}<br>{{ doc.company_address }}", { w: 330, h: 34, color: "#333333", padding: "0 0 0 16px" });
+  const co = txt("{{ doc.company }}<br>{{ doc.company_address_display }}", { w: 330, h: 34, color: "#333333", padding: "0 0 0 16px" });
   const inv = txt("INVOICE<br>{{ doc.name }}", { w: 252, h: 48, fontSize: 18, fontWeight: "700", align: "right", lineHeight: 1.3 });
   hdr.children = [logo.id, co.id, inv.id];
   const div1 = { ...mkL(0, 0), color: "#111111", thickness: 1, w: "100%" };
@@ -1466,7 +1299,7 @@ function buildTree() {
   const bbl = { ...mkC(0, 0), ...col, w: "100%", h: 68, _flow: true };
   const blbl = label("Bill to");
   const bnm = txt("{{ doc.customer_name }}", { h: 20, fontSize: 13, fontWeight: "600" });
-  const bad = txt("{{ doc.customer_address }}", { h: 30, color: "#333333" });
+  const bad = txt("{{ doc.address_display }}", { h: 30, color: "#333333" });
   bbl.children = [blbl.id, bnm.id, bad.id];
   const dbl = { ...mkC(0, 0), ...col, w: "100%", h: 68, _flow: true };
   const dlbl = label("Invoice date", { align: "right" });
@@ -1483,11 +1316,11 @@ function buildTree() {
   const smry = { ...mkC(0, 0), ...col, w: 340, h: 44, gap: 6, _flow: true };
   const sr = { ...mkC(0, 0), ...row, w: "100%", h: 18, _flow: true };
   const sl = txt("Subtotal", { w: 70, h: 18, color: "#555555" });
-  const sv = txt("{{ doc.currency }} {{ doc.net_total }}", { w: 268, h: 18, align: "right" });
+  const sv = txt("{{ doc.net_total }}", { w: 268, h: 18, align: "right" });
   sr.children = [sl.id, sv.id];
   const tr = { ...mkC(0, 0), ...row, w: "100%", h: 20, _flow: true };
   const tl2 = txt("Total", { w: 70, h: 20, fontSize: 13, fontWeight: "700" });
-  const tv = txt("{{ doc.currency }} {{ doc.grand_total }}", { w: 268, h: 20, fontSize: 13, fontWeight: "700", align: "right" });
+  const tv = txt("{{ doc.grand_total }}", { w: 268, h: 20, fontSize: 13, fontWeight: "700", align: "right" });
   tr.children = [tl2.id, tv.id];
   smry.children = [sr.id, tr.id];
   foot.children = [note.id, smry.id];
@@ -1639,6 +1472,21 @@ function NewDesignModal({ onCancel, onCreate }) {
   const [fields, setFields] = useState(TAGRIT_DOCTYPES.Selling[1].fields);
   const [activeCat, setActiveCat] = useState("Selling");
   const [nf, setNf] = useState({ name: "", label: "", isChild: false });
+  // On a site, any doctype can be picked and its real fields loaded
+  const [siteDoctypes, setSiteDoctypes] = useState([]);
+  const [siteDt, setSiteDt] = useState("");
+  const [siteMsg, setSiteMsg] = useState("");
+  useEffect(() => { if (FRAPPE) frappeCall("list_doctypes").then(l => setSiteDoctypes(l || []), () => { }); }, []);
+  const pickSiteDoctype = async () => {
+    if (!siteDt.trim()) return;
+    setSiteMsg("Loading");
+    try {
+      const f = await frappeCall("get_doctype_fields", { doctype: siteDt.trim() });
+      setDoctype(siteDt.trim()); setFields(f); setSiteMsg("");
+    } catch (e) {
+      setSiteMsg(e.message);
+    }
+  };
 
   return (
     <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.5)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000, padding: 20 }}>
@@ -1649,7 +1497,15 @@ function NewDesignModal({ onCancel, onCreate }) {
         </div>
 
         <div style={{ padding: 24, overflowY: "auto", flex: 1, display: "flex", flexDirection: "column", gap: 20 }}>
-          <Sec title="Module">
+          {FRAPPE && <Sec title={"Doctype on " + FRAPPE.site}>
+            <div style={{ display: "flex", gap: 6 }}>
+              <input className="pi" list="pf-site-doctypes" value={siteDt} onChange={e => setSiteDt(e.target.value)} onKeyDown={e => { if (e.key === "Enter") pickSiteDoctype(); }} placeholder="e.g. Sales Invoice" style={{ fontSize: 12 }} />
+              <datalist id="pf-site-doctypes">{siteDoctypes.map(n => <option key={n} value={n} />)}</datalist>
+              <button className="bcb" onClick={pickSiteDoctype} disabled={!siteDt.trim()}>Load fields</button>
+            </div>
+            {siteMsg && <p style={{ fontSize: 11, color: siteMsg === "Loading" ? "var(--t2)" : "var(--rd)", marginTop: 4 }}>{siteMsg}</p>}
+          </Sec>}
+          <Sec title={FRAPPE ? "Or start from a preset" : "Module"}>
             <div style={{ display: "flex", gap: 4, overflowX: "auto", paddingBottom: 8, scrollbarWidth: "none" }}>
               {Object.keys(TAGRIT_DOCTYPES).map(cat => (
                 <button key={cat} onClick={() => setActiveCat(cat)} style={{ padding: "5px 10px", fontSize: 11, fontWeight: 500, borderRadius: "var(--r4)", whiteSpace: "nowrap", border: "1px solid " + (activeCat === cat ? "var(--ac)" : "var(--bd)"), background: activeCat === cat ? "var(--ad)" : "var(--b2)", color: activeCat === cat ? "var(--ac)" : "var(--t2)", cursor: "pointer" }}>
@@ -1759,7 +1615,7 @@ function DesignHistoryModal({ onCancel, onLoad, onDelete, onLoadSite }) {
                     <div style={{ fontSize: 13, fontWeight: 600, color: "var(--t0)" }}>{it.name}</div>
                     <div style={{ fontSize: 10, color: "var(--t2)", marginTop: 2 }}>{new Date(it.updatedAt).toLocaleString()} · {it.nodeCount} elements</div>
                   </div>
-                  <button onClick={() => { if (confirm("Delete this design?")) onDelete(it.id); setItems(items.filter(x => x.id !== it.id)); }} className="ib del" style={{ padding: 8 }} title="Delete">
+                  <button onClick={() => { if (!confirm("Delete this design?")) return; onDelete(it.id); setItems(items.filter(x => x.id !== it.id)); }} className="ib del" style={{ padding: 8 }} title="Delete">
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="3 6 5 6 21 6" /><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2" /></svg>
                   </button>
                 </div>
@@ -1825,7 +1681,7 @@ function PublishModal({ doctype, initialName, onCancel, onPublish }) {
 // ── App ───────────────────────────────────────────────────────────────────────
 function MainApp() {
   const [theme, setTheme] = useState(() => localStorage.getItem("pf_theme") || "dark");
-  useEffect(() => { injectStyles(theme); localStorage.setItem("pf_theme", theme); }, [theme]);
+  useEffect(() => { localStorage.setItem("pf_theme", theme); }, [theme]);
 
   // Load persistence or default
   const savedState = useMemo(() => {
@@ -1867,10 +1723,10 @@ function MainApp() {
   const [doctype, setDoctype] = useState(savedState?.doctype || "Sales Invoice");
   const [activeGuides, setActiveGuides] = useState({ h: [], v: [] });
   const [docFields, setDocFields] = useState(savedState?.docFields || [
-    { name: "name", label: "Invoice #" }, { name: "customer_name", label: "Customer" }, { name: "customer_address", label: "Address" },
+    { name: "name", label: "Invoice #" }, { name: "customer_name", label: "Customer" }, { name: "address_display", label: "Address" },
     { name: "posting_date", label: "Date" }, { name: "due_date", label: "Due Date" }, { name: "currency", label: "Currency" },
     { name: "net_total", label: "Net Total" }, { name: "tax_amount", label: "Tax" }, { name: "grand_total", label: "Grand Total" },
-    { name: "company", label: "Company" }, { name: "company_address", label: "Company Address" },
+    { name: "company", label: "Company" }, { name: "company_address_display", label: "Company Address" },
     { name: "items", label: "Items", isChild: true }, { name: "taxes", label: "Taxes", isChild: true },
   ]);
   const [assets, setAssets] = useState(savedState?.assets || []);
@@ -1909,7 +1765,12 @@ function MainApp() {
     return () => window.removeEventListener("mousemove", handleMove);
   }, []);
 
-  const jinja = useMemo(() => toJinja(tree, doctype), [tree, doctype]);
+  // What gets stored in the Print Format; also what the Jinja tab shows and copies
+  const jinja = useMemo(() => toPrintFormatHtml(tree), [tree]);
+  const pg = pageDims(tree);
+  const settings = getSettings(tree);
+  const updateSettings = (ch) => record({ ...tree, settings: { ...settings, ...ch } });
+  useEffect(() => { injectStyles(theme, pg); }, [theme, pg.w, pg.h]);
 
   const handlePrint = useCallback(() => {
     setIsPrinting(true);
@@ -1934,8 +1795,8 @@ function MainApp() {
       const node = printRef.current;
       const options = {
         backgroundColor: '#ffffff',
-        width: A4W,
-        height: A4H,
+        width: pg.w,
+        height: pg.h,
         style: {
           transform: 'none',
           borderRadius: '0',
@@ -2054,7 +1915,6 @@ function MainApp() {
   // 'saving', 'saved', null
 
   const selEl = sel ? tree.nodes[sel] : null;
-  // const jinja = useMemo(() => toJinja(tree, doctype), [tree, doctype]); // This line was duplicated, removed.
 
   const addEl = useCallback((type, ov = {}) => {
     try {
@@ -2274,7 +2134,31 @@ function MainApp() {
       margin_mm: Math.round(pad * 25.4 / 96 * 10) / 10
     });
     setPrintFormat(res.name);
+    if (res.design) {
+      // The site moved embedded images into its file store; keep working from those URLs
+      const d = JSON.parse(res.design);
+      setTree(migrateTree(d.tree));
+      setAssets(d.assets || []);
+    }
     return res;
+  };
+
+  // Preview against a real document, rendered by the site's own print pipeline
+  const [live, setLive] = useState({ name: "", recent: [], result: null, busy: false, error: "" });
+  useEffect(() => {
+    if (!FRAPPE || !preview) return;
+    frappeCall("recent_docs", { doctype }).then(recent => setLive(l => ({ ...l, recent: recent || [] })), () => { });
+  }, [preview, doctype]);
+  const renderLive = async (name) => {
+    if (!name.trim()) return;
+    setLive(l => ({ ...l, busy: true, error: "" }));
+    try {
+      const r = await frappeCall("preview", { doctype, docname: name.trim(), html: jinja });
+      const page = `<!doctype html><html><head><meta charset="utf-8">${r.css_url ? `<link rel="stylesheet" href="${r.css_url}">` : ""}<style>${r.style}</style><style>body{margin:0}</style></head><body><div class="print-format-gutter"><div class="print-format">${r.html}</div></div></body></html>`;
+      setLive(l => ({ ...l, busy: false, result: page }));
+    } catch (e) {
+      setLive(l => ({ ...l, busy: false, error: e.message }));
+    }
   };
 
   const loadSiteDesign = (name, data) => {
@@ -2287,6 +2171,13 @@ function MainApp() {
     setActivePageIdx(0);
     setShowHistoryModal(false);
   };
+
+  // /printforge?format=<Print Format> opens that format's design (used by the button on the Print Format form)
+  useEffect(() => {
+    const name = FRAPPE && new URLSearchParams(window.location.search).get("format");
+    if (!name) return;
+    frappeCall("get_design", { print_format: name }).then(d => loadSiteDesign(d.name, JSON.parse(d.design)), e => alert(e.message));
+  }, []);
 
   const saveDesign = useCallback(() => {
     setSaveStatus("saving");
@@ -2323,7 +2214,7 @@ function MainApp() {
   };
 
   const downloadJinja = () => {
-    const blob = new Blob([jinja], { type: "text/html" });
+    const blob = new Blob([toStandaloneHtml(tree, doctype)], { type: "text/html" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
@@ -2495,8 +2386,21 @@ function MainApp() {
         }} doctype={doctype} setDoctype={setDoctype} docFields={docFields} setDocFields={setDocFields} tree={tree} selected={sel} onSelect={setSel} penMode={penMode} setPenMode={setPenMode} />}
 
         <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden", position: "relative" }}>
+          {FRAPPE && preview && (
+            <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 12px", background: "var(--b1)", borderBottom: "1px solid var(--bd)", flexShrink: 0, fontSize: 11, color: "var(--t1)" }}>
+              <span>Preview with a real {doctype}</span>
+              <input className="pi mono" list="pf-recent-docs" value={live.name} onChange={e => setLive(l => ({ ...l, name: e.target.value }))} onKeyDown={e => { if (e.key === "Enter") renderLive(live.name); }} placeholder="Document name" style={{ width: 220 }} />
+              <datalist id="pf-recent-docs">{live.recent.map(n => <option key={n} value={n} />)}</datalist>
+              <button className="bcb" disabled={live.busy || !live.name.trim()} onClick={() => renderLive(live.name)}>{live.busy ? "Rendering" : "Render"}</button>
+              {live.result && <button className="bcb" onClick={() => setLive(l => ({ ...l, result: null, error: "" }))}>Back to sample data</button>}
+              {live.error && <span style={{ color: "var(--rd)" }}>{live.error}</span>}
+              <div style={{ flex: 1 }} />
+              {live.result && <span style={{ color: "var(--t2)" }}>Rendered by the site, as the print view will show it</span>}
+            </div>
+          )}
+          {FRAPPE && preview && live.result && <iframe title="Print preview" srcDoc={live.result} style={{ flex: 1, width: "100%", border: 0, background: "#d1d8dd" }} />}
           {!preview && !showCode && showRulers && <Ruler type="h" zoom={zoom} scrollPos={scrollPos.x} mousePos={mousePos} />}
-          <div style={{ display: "flex", flex: 1, overflow: "hidden" }}>
+          <div style={{ display: FRAPPE && preview && live.result ? "none" : "flex", flex: 1, overflow: "hidden" }}>
             {!preview && !showCode && showRulers && <Ruler type="v" zoom={zoom} scrollPos={scrollPos.y} mousePos={mousePos} />}
 
             <div className="cv" onScroll={handleScroll} style={{ flex: 1, overflow: "auto", display: "flex", alignItems: "flex-start", justifyContent: "center", padding: 40, position: "relative" }} onClick={() => setSel(null)}>
@@ -2530,7 +2434,7 @@ function MainApp() {
                       inset: "-3000px",
                       "--gc": "var(--bd)",
                       "--gs": gridSize + "px",
-                      backgroundPosition: "calc(50% - 397px) 100px",
+                      backgroundPosition: `calc(50% - ${pg.w / 2}px) 100px`,
                       zIndex: -1
                     }} />
                   )}
@@ -2563,7 +2467,7 @@ function MainApp() {
                   {tree.pages.map((page, pidx) => (
                     <div key={page.id} style={{ flexShrink: 0, position: "relative" }}>
                       {!isPrinting && <div style={{ fontSize: 10, color: "var(--t2)", marginBottom: 6, display: "flex", justifyContent: "space-between", paddingInline: 2 }}>
-                        <span>A4 {A4W}x{A4H}px · {page.name}</span>
+                        <span>{settings.pageSize} {settings.orientation.toLowerCase()} · {pg.w}x{pg.h}px · {page.name}</span>
                         <div style={{ display: "flex", gap: 8 }}>
                           <button onClick={(e) => { e.stopPropagation(); dupPage(pidx); }} style={{ background: "none", border: "none", color: "var(--t2)", cursor: "pointer", fontSize: 9 }}>Duplicate</button>
                           {tree.pages.length > 1 && <button onClick={(e) => { e.stopPropagation(); delPage(pidx); }} style={{ background: "none", border: "none", color: "var(--rd)", cursor: "pointer", fontSize: 9 }}>Delete</button>}
@@ -2573,7 +2477,7 @@ function MainApp() {
                         ref={pidx === 0 ? printRef : null}
                         className="pf-print-area"
                         onMouseDown={() => setActivePageIdx(pidx)}
-                        style={{ position: "relative", width: A4W, minHeight: A4H, background: "#ffffff", boxShadow: isPrinting ? "none" : "0 0 0 1px rgba(0,0,0,.1),0 2px 8px rgba(0,0,0,.12)", padding: page.padding ?? 40, display: "flex", flexDirection: "column", outline: !preview && !showCode && activePageIdx === pidx ? "1px solid var(--ac)" : "none" }}
+                        style={{ position: "relative", width: pg.w, minHeight: pg.h, background: "#ffffff", boxShadow: isPrinting ? "none" : "0 0 0 1px rgba(0,0,0,.1),0 2px 8px rgba(0,0,0,.12)", padding: page.padding ?? 40, display: "flex", flexDirection: "column", outline: !preview && !showCode && activePageIdx === pidx ? "1px solid var(--ac)" : "none" }}
                         onClick={e => { if (e.target === e.currentTarget) setSel(null); }}>
                         {!preview && !showCode && !isPrinting && showGrid && (
                           <div className="pf-grid" style={{ "--gc": "rgba(0,0,0,.04)", "--gs": gridSize + "px" }} />
@@ -2603,7 +2507,7 @@ function MainApp() {
           <Props
             tree={tree} selected={sel} docFields={docFields} onUpdate={updateEl} onDelete={deleteEl} onDup={dupEl} onZOrder={zOrder} onAddChild={addChild}
             showRulers={showRulers} setShowRulers={setShowRulers} showGrid={showGrid} setShowGrid={setShowGrid} gridSize={gridSize} setGridSize={setGridSize}
-            activePageIdx={activePageIdx} onUpdatePage={updatePage}
+            activePageIdx={activePageIdx} onUpdatePage={updatePage} onUpdateSettings={updateSettings}
             penMode={penMode} setPenMode={setPenMode}
             selPointIdx={selPointIdx} setSelPointIdx={setSelPointIdx}
           />

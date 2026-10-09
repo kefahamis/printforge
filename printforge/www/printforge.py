@@ -2,6 +2,7 @@ import os
 
 import frappe
 from frappe import _
+from frappe.www.printview import get_font
 
 no_cache = 1
 
@@ -20,3 +21,5 @@ def get_context(context):
 	context.csrf_token = frappe.sessions.get_csrf_token()
 	context.pf_user = frappe.session.user
 	context.pf_site = frappe.local.site
+	# The builder draws the page in the font the site prints with
+	context.pf_print_font = get_font(frappe.get_single("Print Settings"))

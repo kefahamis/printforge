@@ -40,15 +40,20 @@ site before relying on it:
 2. Publish the starter invoice, open a Sales Invoice, pick the new format, and
    download the PDF. Check the table and the totals block line up as they do in the
    builder.
-3. Check the PDF margins. Publishing writes the design's page padding to the Print
-   Format's margin fields; Frappe versions without those fields use Print Settings
-   instead.
+3. Check the PDF margins and that nothing is cut off on the right. The design's
+   margins are written into the format's CSS as a `.print-format { margin-*: … }`
+   rule, which is where Frappe's wkhtmltopdf step reads them from, and also into the
+   Print Format's margin fields for newer PDF generators.
+4. In the builder, open Preview, enter a real document name and press Render. That
+   runs the unsaved design through the site's own print pipeline.
 
 ## Using it
 
-1. **New** — pick the doctype the format is for.
-2. **Doctype tab → Load fields from site** — pulls the doctype's real fields.
-3. Design the page. **Preview** fills it with sample data.
+1. **New** — type any doctype on the site and load its fields, or start from a preset.
+2. Design the page. Set paper, margins and letter head in the Page panel (shown when
+   nothing is selected).
+3. **Preview** fills it with sample data; enter a document name there to render a
+   real one.
 4. **Publish** — name the Print Format, optionally make it the default for the
    doctype. After the first publish the button becomes **Update Print Format**.
 5. **History** lists the formats published from PrintForge; click one to reopen it.
@@ -56,8 +61,25 @@ site before relying on it:
 Publishing will not overwrite a standard Print Format, or one that was not made in
 PrintForge. Use a different name in that case.
 
-Published formats use the site's print font. The builder canvas shows Geist, so
-letterforms and line breaks can differ slightly from the PDF.
+### How a design maps onto Frappe's print system
+
+- **Fields.** A bare `{{ doc.field }}` is published as `doc.get_formatted("field")`, so
+  currency, dates and numbers print the way the desk shows them. Add a filter or write
+  any other expression and it is left exactly as typed.
+- **Company logo.** The default image element looks the logo up on the Company record.
+- **Letter head.** Off by default: the design prints as drawn. Turn on *Use the site's
+  letter head and footer* in the Page panel to add them the way a standard format does,
+  including page numbers when *Repeat Header and Footer* is on in Print Settings.
+- **Paper.** Paper size, orientation and margins are set in the Page panel.
+- **Font.** The page is drawn in the site's print font (Print Settings), and published
+  formats inherit it.
+- **Images.** Images added in the builder are moved into the site's public files on
+  publish instead of being embedded in the format.
+- **Print Format form.** Formats made here get an *Edit in PrintForge* button. Editing
+  their HTML by hand is overwritten on the next publish.
+
+Not covered: print formats for Reports, and repeating a header you designed yourself
+on every page (only the site letter head repeats).
 
 ## Updating
 
@@ -75,7 +97,8 @@ Requires Node 18 or newer.
 ```bash
 npm install
 npm run dev              # standalone, http://localhost:5173
-npm run build:frappe     # rebuild printforge/public/dist/printforge.js
+npm test                 # exporter tests
+npm run build:frappe     # rebuild printforge/public/dist/
 ```
 
 After `npm run build:frappe`, run `bench build --app printforge` on the bench (or
@@ -89,7 +112,9 @@ and the site list in History only appear when the builder is opened through Frap
 | Path | What it is |
 | --- | --- |
 | `src/App.jsx` | The builder (React) |
-| `printforge/api.py` | Site API: publish, list and open designs, doctype fields |
+| `src/exporter.js` | Design → Print Format HTML/Jinja; tested in `exporter.test.js` |
+| `printforge/api.py` | Site API: publish, preview with a document, open designs, doctypes and fields |
+| `printforge/public/js/print_format.js` | *Edit in PrintForge* button on the Print Format form |
 | `printforge/install.py` | Creates the `printforge_design` custom field |
 | `printforge/www/printforge.*` | The full-screen builder page at `/printforge` |
 | `printforge/printforge/page/printforge/` | Desk page at `/app/printforge` |

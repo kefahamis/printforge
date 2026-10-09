@@ -1,0 +1,37 @@
+.ql-container.ql-snow {
+    border: 1px solid var(--bd) !important;
+    border-radius: 0 0 4px 4px;
+    background: var(--b0);
+    color: var(--t0);
+    font-family: inherit !important;
+}
+
+.ql-toolbar.ql-snow {
+    border: 1px solid var(--bd) !important;
+    border-radius: 4px 4px 0 0;
+    background: var(--b2);
+    border-bottom: none !important;
+}
+
+.ql-snow .ql-stroke {
+    stroke: var(--t2) !important;
+}
+
+.ql-snow .ql-fill {
+    fill: var(--t2) !important;
+}
+
+.ql-snow .ql-picker {
+    color: var(--t2) !important;
+}
+
+.ql-editor {
+    min-height: 120px;
+    font-size: 13px;
+    line-height: 1.6;
+}
+
+.ql-editor.ql-blank::before {
+    color: var(--t2) !important;
+    font-style: normal !important;
+}
